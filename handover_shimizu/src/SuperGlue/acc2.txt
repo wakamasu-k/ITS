@@ -1,0 +1,17 @@
+python acc2.py --folder_png "C:\Users\shimizu.k\Downloads\waymo\data\intensity\segment-12321865437129862911_3480_000_3500_000_with_camera_labels" --folder_jpg "C:\Users\shimizu.k\Downloads\waymo\data\camera_gray\segment-12321865437129862911_3480_000_3500_000_with_camera_labels" --out_dir "C:\Users\shimizu.k\Downloads\waymo\match\5p\sg\segment-12321865437129862911_3480_000_3500_000_with_camera_labels" --resize 800 450 --distance_thr 5 --no_display
+
+python acc2.py ^
+  --folder_png  "C:\Users\shimizu.k\Downloads\nuS\data\intensity" ^
+  --folder_jpg  "C:\Users\shimizu.k\Downloads\nuS\data\camera_gray" ^
+  --out_dir     "C:\Users\shimizu.k\Downloads\nuS\match\10p\sg" ^
+  --resize 800 450 ^
+  --distance_thr 10 ^
+  --no_display
+
+python acc2.py ^
+  --folder_png  "C:\Users\shimizu.k\Downloads\nuS\data\intensity" ^
+  --folder_jpg  "C:\Users\shimizu.k\Downloads\nuS\data\camera_gray" ^
+  --out_dir     "C:\Users\shimizu.k\Downloads\nuS\match\5p\sg" ^
+  --resize 800 450 ^
+  --distance_thr 5 ^
+  --no_display

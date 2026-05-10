@@ -1,0 +1,17 @@
+data_make
+tfrecordからのデータの作成
+アンカ作成、地図作成、反射強度画像作成、カメラ画像抽出、反射強度画像のデータ拡張
+
+retrieval
+学習コード、評価コード、ペア作成コード
+
+LoFTR
+学習コードおよび評価コード、学習用評価用真値作成
+
+SuperGlue
+loftrとの比較用
+
+data_make、retrieval,LoFTR/toolsにあるコードの詳細はコメント文を参照
+
+
+

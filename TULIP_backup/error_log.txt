@@ -1,0 +1,112 @@
+| distributed init (rank 0): env://, gpu 0
+[22:15:36.606296] job dir: /home/wakamatsu/ITS/TULIP_backup/tulip
+[22:15:36.606510] Namespace(accum_iter=1,
+batch_size=8,
+blr=0.001,
+circular_padding=True,
+data_path_high_res='./dataset/KITTI/',
+data_path_low_res='./dataset/KITTI/',
+dataset_select='kitti',
+device='cuda',
+dist_backend='nccl',
+dist_on_itp=False,
+dist_url='env://',
+distributed=True,
+entity='myentity',
+epochs=600,
+eval=False,
+gpu=0,
+grid_size=0.1,
+img_size_high_res=[64,
+1024],
+img_size_low_res=[16,
+1024],
+in_chans=1,
+keep_close_scan=False,
+keep_far_scan=False,
+local_rank=-1,
+log_dir='./output_dir',
+log_transform=True,
+lr=0.0005,
+mc_drop=False,
+min_lr=0.0,
+model_select='tulip_base',
+noise_threshold=0.03,
+num_mcdropout_iterations=50,
+num_workers=2,
+output_dir='./experiment/kitti/tulip_base',
+patch_size=[1,
+4],
+patch_unmerging=True,
+pin_mem=True,
+pixel_shuffle=True,
+project_name='experiment_kitti',
+rank=0,
+remove_mask_token=False,
+resume='',
+roll=False,
+run_name='tulip_base',
+save_frequency=100,
+save_pcd=False,
+seed=0,
+start_epoch=0,
+swin_v2=False,
+wandb_disabled=False,
+warmup_epochs=60,
+weight_decay=0.01,
+window_size=[2,
+8],
+world_size=1)
+[22:15:36.789759] There are totally 21000 training data and 21000 validation data
+[22:15:36.789943] Sampler_train = <torch.utils.data.distributed.DistributedSampler object at 0x7da4fc893a30>
+wandb: Loading settings from /home/wakamatsu/ITS/TULIP_backup/wandb/settings
+Traceback (most recent call last):
+  File "tulip/main_lidar_upsampling.py", line 329, in <module>
+    main(args)
+  File "tulip/main_lidar_upsampling.py", line 190, in main
+    wandb.init(project=args.project_name,
+  File "/home/wakamatsu/ITS/.venv_tulip/lib/python3.8/site-packages/wandb/sdk/wandb_init.py", line 1595, in init
+    get_sentry().reraise(e)
+  File "/home/wakamatsu/ITS/.venv_tulip/lib/python3.8/site-packages/wandb/analytics/sentry.py", line 190, in reraise
+    raise exc.with_traceback(tb)
+  File "/home/wakamatsu/ITS/.venv_tulip/lib/python3.8/site-packages/wandb/sdk/wandb_init.py", line 1516, in init
+    wi.maybe_login(init_settings)
+  File "/home/wakamatsu/ITS/.venv_tulip/lib/python3.8/site-packages/wandb/sdk/wandb_init.py", line 196, in maybe_login
+    wandb_login._login(
+  File "/home/wakamatsu/ITS/.venv_tulip/lib/python3.8/site-packages/wandb/sdk/wandb_login.py", line 190, in _login
+    auth = _find_or_prompt_for_key(
+  File "/home/wakamatsu/ITS/.venv_tulip/lib/python3.8/site-packages/wandb/sdk/wandb_login.py", line 266, in _find_or_prompt_for_key
+    auth = wbauth.authenticate_session(
+  File "/home/wakamatsu/ITS/.venv_tulip/lib/python3.8/site-packages/wandb/sdk/lib/wbauth/authenticate.py", line 139, in authenticate_session
+    raise UsageError(
+wandb.errors.errors.UsageError: No API key configured. Use `wandb login` to log in.
+ERROR:torch.distributed.elastic.multiprocessing.api:failed (exitcode: 1) local_rank: 0 (pid: 115585) of binary: /home/wakamatsu/ITS/.venv_tulip/bin/python3
+Traceback (most recent call last):
+  File "/home/wakamatsu/ITS/.venv_tulip/bin/torchrun", line 10, in <module>
+    sys.exit(main())
+  File "/home/wakamatsu/ITS/.venv_tulip/lib/python3.8/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 345, in wrapper
+    return f(*args, **kwargs)
+  File "/home/wakamatsu/ITS/.venv_tulip/lib/python3.8/site-packages/torch/distributed/run.py", line 761, in main
+    run(args)
+  File "/home/wakamatsu/ITS/.venv_tulip/lib/python3.8/site-packages/torch/distributed/run.py", line 752, in run
+    elastic_launch(
+  File "/home/wakamatsu/ITS/.venv_tulip/lib/python3.8/site-packages/torch/distributed/launcher/api.py", line 131, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/home/wakamatsu/ITS/.venv_tulip/lib/python3.8/site-packages/torch/distributed/launcher/api.py", line 245, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+tulip/main_lidar_upsampling.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-04-16_22:15:41
+  host      : 1973700X.md.local
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 115585)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
