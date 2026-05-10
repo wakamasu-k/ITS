@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# virtual environment
+.venv/
+venv/
+env/
+git add .gitignore section.md
+# editor
+.vscode/
+
+# cache
+.ipynb_checkpoints/
+.cache/
+
+# model weights
+*.pth
+*.pt
+*.ckpt
+*.onnx
+
+# numpy / point cloud / large data
+*.npy
+*.npz
+*.pcd
+*.bin
+
+# images / outputs
+*.png
+*.jpg
+*.jpeg
+*.save
+
+# datasets / generated files
+database_images/
+kitti_train/
+sampled_camera_images_all/
+sampled_intensity_images_all/
+outputs/
+results/
+runs/
+checkpoints/
