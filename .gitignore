@@ -33,6 +33,7 @@ git add .gitignore section.md
 *.jpg
 *.jpeg
 *.save
+*.json
 
 # datasets / generated files
 database_images/
@@ -105,4 +106,4 @@ scripts/slurm/
 scripts/sbatch_submit.sh
 src/utils/client.py
 
-waymo_output/
+waymo_outputs/cam_gray_test/...
