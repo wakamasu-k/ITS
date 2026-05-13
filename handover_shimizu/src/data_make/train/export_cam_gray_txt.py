@@ -3,6 +3,7 @@
 # 使い方:
 #   python export_cam_gray_txt.py --help
 #   必要な入力パスと出力先を引数で指定して実行する。
+#"\\172.22.40.107\e\waymo_tf\perception_v1.4.3\individual_files\training\segment-15832924468527961_1564_160_1584_160_with_camera_labels.tfrecord"
 
 """
 Step 4: カメラ画像（Gray）＋メタの一括出力（全フレーム）
@@ -41,7 +42,7 @@ from waymo_open_dataset import dataset_pb2 as open_dataset
 
 # txt内がstemの場合に探索する Waymo individual_files のルート（例: <root>/<subset>/<stem>.tfrecord）
 # 単一tfrecord指定（従来）には影響しない（txt入力のときだけ使用）。
-DEFAULT_TFRECORD_ROOT = "/mnt/e/waymo/perception_v1.4.3/individual_files"
+DEFAULT_TFRECORD_ROOT = "\\172.22.40.107\e\waymo_tf\perception_v1.4.3\individual_files"
 
 
 def ensure_dir(p: Path):

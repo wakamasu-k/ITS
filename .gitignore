@@ -104,3 +104,5 @@ handover_shimizu/src/LoFTR/tools/draw_QccDayNights.py
 scripts/slurm/
 scripts/sbatch_submit.sh
 src/utils/client.py
+
+waymo_output/
