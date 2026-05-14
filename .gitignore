@@ -106,4 +106,4 @@ scripts/slurm/
 scripts/sbatch_submit.sh
 src/utils/client.py
 
-waymo_outputs/cam_gray_test/...
+waymo_outputs/
