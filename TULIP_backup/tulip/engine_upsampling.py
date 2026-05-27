@@ -22,7 +22,9 @@ import matplotlib.colors as colors
 import matplotlib.cm as cmx
 from util.evaluation import *
 from util.filter import *
-import trimesh
+# import trimesh
+
+import cv2
 
 import time
 import tqdm
@@ -78,6 +80,59 @@ def train_one_epoch(model: torch.nn.Module,
             _, total_loss, pixel_loss = model(samples_low_res, 
                             samples_high_res, 
                             eval = False)
+                # --- [追加] TULIPが出力したIntensityチャンネルを画像として保存 ---
+        # pred_img:       [B, 2, 64, 1024]
+        # images_low_res: [B, 2, 16, 1024]
+        # images_high_res:[B, 2, 64, 1024]
+
+        VIS_LIMIT = 20  # 保存する枚数．全件保存したい場合は None にする
+
+        if VIS_LIMIT is None or global_step <= VIS_LIMIT:
+            out_dir = os.path.join(args.output_dir, "intensity_images")
+            os.makedirs(out_dir, exist_ok=True)
+
+            pred_vis = pred_img.detach().float().cpu()
+            low_vis = images_low_res.detach().float().cpu()
+            gt_vis = images_high_res.detach().float().cpu()
+
+            # log_transformを使っている場合は元スケールに戻す
+            if args.log_transform:
+                pred_vis = torch.expm1(pred_vis)
+                low_vis = torch.expm1(low_vis)
+                gt_vis = torch.expm1(gt_vis)
+
+            # 2ch目がIntensity
+            pred_intensity = pred_vis[0, 1].numpy()
+            low_intensity = low_vis[0, 1].numpy()
+            gt_intensity = gt_vis[0, 1].numpy()
+
+            # lowは16x1024なので，比較しやすいように64x1024へ拡大
+            low_intensity_up = cv2.resize(
+                low_intensity,
+                (gt_intensity.shape[1], gt_intensity.shape[0]),
+                interpolation=cv2.INTER_NEAREST
+            )
+
+            error_intensity = np.abs(pred_intensity - gt_intensity)
+
+            def save_gray(img, path):
+                img = img.astype(np.float32)
+                img = img - img.min()
+                img = img / (img.max() + 1e-8)
+                img = (img * 255).astype(np.uint8)
+                cv2.imwrite(path, img)
+
+            save_gray(low_intensity_up, os.path.join(out_dir, f"low_intensity_{global_step:06d}.png"))
+            save_gray(pred_intensity, os.path.join(out_dir, f"pred_intensity_{global_step:06d}.png"))
+            save_gray(gt_intensity, os.path.join(out_dir, f"gt_intensity_{global_step:06d}.png"))
+            save_gray(error_intensity, os.path.join(out_dir, f"error_intensity_{global_step:06d}.png"))
+
+            print(f"[Intensity image saved] step={global_step}, dir={out_dir}")
+
+        # 反射強度画像だけ確認したい場合は，20枚保存後に評価を終了する
+        if global_step >= 20:
+            print("Finished saving intensity images. Stop evaluation early.")
+            return
 
         total_loss_value = total_loss.item()
         pixel_loss_value = pixel_loss.item()
@@ -309,52 +364,44 @@ def evaluate(data_loader, model, device, log_writer, args=None):
                 log_writer.add_scalar('Test/precision', precision, local_step)
                 log_writer.add_scalar('Test/recall', recall, local_step)
 
-                if args.save_pcd:
-                # 1. 保存用ディレクトリの作成
-                    pcd_outputpath = os.path.join(args.output_dir, 'pcd')
-                    if not os.path.exists(pcd_outputpath):
-                        os.makedirs(pcd_outputpath, exist_ok=True)
+    if args.save_pcd:
+        pcd_outputpath = os.path.join(args.output_dir, 'pcd')
+        os.makedirs(pcd_outputpath, exist_ok=True)
 
-                    # 2. ファイル名の設定（global_stepを使用して一意にする）
-                    save_name_pred = os.path.join(pcd_outputpath, f"pred_{global_step:06d}.ply")
-                    save_name_gt = os.path.join(pcd_outputpath, f"gt_{global_step:06d}.ply")
+        save_name_pred = os.path.join(pcd_outputpath, f"pred_{global_step:06d}.ply")
+        save_name_gt = os.path.join(pcd_outputpath, f"gt_{global_step:06d}.ply")
 
-                # 3. 反射強度を保持して保存するための関数
-                def export_with_intensity(np_points, out_path):
-                    """
-                    trimeshを使わずに、反射強度(4列目)を保持したPLYファイルを直接書き出すヘルパー
-                    """
-                    with open(out_path, 'w') as f:
-                        # PLYヘッダーの記述
-                        f.write("ply\n")
-                        f.write("format ascii 1.0\n")
-                        f.write(f"element vertex {len(np_points)}\n")
-                        f.write("property float x\n")
-                        f.write("property float y\n")
-                        f.write("property float z\n")
-                        f.write("property float intensity\n") # 4列目を強度として定義
-                        f.write("end_header\n")
-                        # データの書き込み
-                        np.savetxt(f, np_points, fmt='%.6f %.6f %.6f %.6f')
+        def export_with_intensity(np_points, out_path):
+            with open(out_path, 'w') as f:
+                f.write("ply\n")
+                f.write("format ascii 1.0\n")
+                f.write(f"element vertex {len(np_points)}\n")
+                f.write("property float x\n")
+                f.write("property float y\n")
+                f.write("property float z\n")
+                f.write("property float intensity\n")
+                f.write("end_header\n")
+                np.savetxt(f, np_points, fmt='%.6f %.6f %.6f %.6f')
 
-                # 4. 実行（予測データと正解データ）
-                export_with_intensity(pcd_pred, save_name_pred)
-                export_with_intensity(pcd_gt, save_name_gt)
+        export_with_intensity(pcd_pred, save_name_pred)
+        export_with_intensity(pcd_gt, save_name_gt)
+
+        # print(f"Saved point cloud: {save_name_pred}")
                 
                 # デバッグ表示（必要なければ消してOK）
-                if global_step % 100 == 0:
-                    print(f"Saved point cloud: {save_name_pred}")
+    if global_step % 100 == 0:
+                print(f"Saved point cloud: {save_name_pred}")
 
-            # local_stepのインクリメントはifの外で行う
-            local_step += 1
+        # local_stepのインクリメントはifの外で行う
+    local_step += 1
 
 
-            total_iou += iou
-            total_cd += chamfer_dist
-            total_loss += pixel_loss_one_input.item()
-            total_f1 += f1
-            total_precision += precision
-            total_recall += recall
+    total_iou += iou
+    total_cd += chamfer_dist
+    total_loss += pixel_loss_one_input.item()
+    total_f1 += f1
+    total_precision += precision
+    total_recall += recall
 
 
     evaluation_file_path = os.path.join(args.output_dir,'results.txt')
@@ -400,6 +447,9 @@ def MCdrop(data_loader, model, device, log_writer, args=None):
 
     grid_size = args.grid_size
     global_step = 0
+        # --- [追加] 反射強度画像を保存する枚数 ---
+    intensity_save_count = 0
+    intensity_save_limit = 20
     total_loss = 0
     local_step = 0
     total_iou = 0
@@ -438,7 +488,7 @@ def MCdrop(data_loader, model, device, log_writer, args=None):
                                 images_high_res, 
                                 mc_drop = True) 
                 
-                pred_img_iteration[i*iteration_batch:i*iteration_batch+input_batch, ...] = pred_imgs
+            pred_img_iteration[i*iteration_batch:i*iteration_batch+input_batch, ...] = pred_imgs
             pred_img = torch.mean(pred_img_iteration, dim = 0, keepdim = True)
             pred_img_var = torch.std(pred_img_iteration, dim = 0, keepdim = True)
             noise_removal = pred_img_var > noise_threshold * pred_img
@@ -553,7 +603,7 @@ def MCdrop(data_loader, model, device, log_writer, args=None):
             evaluation_metrics['recall'].append(recall)
             evaluation_metrics['f1'].append(f1)
             
-            if global_step % 100 == 0 or global_step == 1:
+            if global_step >= 20:
                 # --- 画像化に関する一連の処理をすべて try ブロックに入れる ---
                 try:
                     loss_map_normalized = (loss_map - loss_map.min()) / (loss_map.max() - loss_map.min() + 1e-8)
