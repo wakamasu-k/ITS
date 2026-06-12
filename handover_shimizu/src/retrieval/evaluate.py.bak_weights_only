@@ -737,7 +737,7 @@ def _load_model(args):
         freeze_stages=int(args.freeze_stages),
     )
 
-    ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    ckpt = torch.load(args.checkpoint, map_location="cpu")
     if isinstance(ckpt, dict) and "model" in ckpt:
         state = ckpt["model"]
     elif isinstance(ckpt, dict) and "state_dict" in ckpt:

@@ -22,7 +22,7 @@ import matplotlib.colors as colors
 import matplotlib.cm as cmx
 from util.evaluation import *
 from util.filter import *
-# import trimesh
+import trimesh
 
 import cv2
 
@@ -79,60 +79,10 @@ def train_one_epoch(model: torch.nn.Module,
         with torch.cuda.amp.autocast():
             _, total_loss, pixel_loss = model(samples_low_res, 
                             samples_high_res, 
-                            eval = False)
-                # --- [追加] TULIPが出力したIntensityチャンネルを画像として保存 ---
-        # pred_img:       [B, 2, 64, 1024]
-        # images_low_res: [B, 2, 16, 1024]
-        # images_high_res:[B, 2, 64, 1024]
+                            eval = False)    
 
-        VIS_LIMIT = 20  # 保存する枚数．全件保存したい場合は None にする
-
-        if VIS_LIMIT is None or global_step <= VIS_LIMIT:
-            out_dir = os.path.join(args.output_dir, "intensity_images")
-            os.makedirs(out_dir, exist_ok=True)
-
-            pred_vis = pred_img.detach().float().cpu()
-            low_vis = images_low_res.detach().float().cpu()
-            gt_vis = images_high_res.detach().float().cpu()
-
-            # log_transformを使っている場合は元スケールに戻す
-            if args.log_transform:
-                pred_vis = torch.expm1(pred_vis)
-                low_vis = torch.expm1(low_vis)
-                gt_vis = torch.expm1(gt_vis)
-
-            # 2ch目がIntensity
-            pred_intensity = pred_vis[0, 1].numpy()
-            low_intensity = low_vis[0, 1].numpy()
-            gt_intensity = gt_vis[0, 1].numpy()
-
-            # lowは16x1024なので，比較しやすいように64x1024へ拡大
-            low_intensity_up = cv2.resize(
-                low_intensity,
-                (gt_intensity.shape[1], gt_intensity.shape[0]),
-                interpolation=cv2.INTER_NEAREST
-            )
-
-            error_intensity = np.abs(pred_intensity - gt_intensity)
-
-            def save_gray(img, path):
-                img = img.astype(np.float32)
-                img = img - img.min()
-                img = img / (img.max() + 1e-8)
-                img = (img * 255).astype(np.uint8)
-                cv2.imwrite(path, img)
-
-            save_gray(low_intensity_up, os.path.join(out_dir, f"low_intensity_{global_step:06d}.png"))
-            save_gray(pred_intensity, os.path.join(out_dir, f"pred_intensity_{global_step:06d}.png"))
-            save_gray(gt_intensity, os.path.join(out_dir, f"gt_intensity_{global_step:06d}.png"))
-            save_gray(error_intensity, os.path.join(out_dir, f"error_intensity_{global_step:06d}.png"))
-
-            print(f"[Intensity image saved] step={global_step}, dir={out_dir}")
-
-        # 反射強度画像だけ確認したい場合は，20枚保存後に評価を終了する
-        if global_step >= 20:
-            print("Finished saving intensity images. Stop evaluation early.")
-            return
+        
+        
 
         total_loss_value = total_loss.item()
         pixel_loss_value = pixel_loss.item()
@@ -207,7 +157,10 @@ def evaluate(data_loader, model, device, log_writer, args=None):
                           'iou':[],
                           'precision':[],
                           'recall':[],
-                          'f1':[]}
+                          'f1':[],
+                          'intensity_mae': [],
+                            'intensity_rmse': []
+                          }
 
 
     for batch in tqdm.tqdm(data_loader):
@@ -224,7 +177,92 @@ def evaluate(data_loader, model, device, log_writer, args=None):
             pred_img, _, _= model(images_low_res, 
                                     images_high_res, 
                                     eval = True)
+        # --- [追加] Intensityチャンネルの数値評価 ---
+        pred_eval = pred_img.detach().float()
+        gt_eval = images_high_res.detach().float()
 
+        if args.log_transform:
+            pred_eval = torch.expm1(pred_eval)
+            gt_eval = torch.expm1(gt_eval)
+
+        if pred_eval.shape[1] >= 2:
+            pred_intensity_t = pred_eval[:, 1, :, :]
+            gt_intensity_t = gt_eval[:, 1, :, :]
+
+            intensity_abs = torch.abs(pred_intensity_t - gt_intensity_t)
+            intensity_mae = intensity_abs.mean().item()
+            intensity_rmse = torch.sqrt(((pred_intensity_t - gt_intensity_t) ** 2).mean()).item()
+
+            evaluation_metrics['intensity_mae'].append(intensity_mae)
+            evaluation_metrics['intensity_rmse'].append(intensity_rmse)
+
+            if global_step % 100 == 0 or global_step == 1:
+                print(
+                    f"[Intensity metrics] step={global_step}, "
+                    f"MAE={intensity_mae:.6f}, RMSE={intensity_rmse:.6f}"
+                )
+        else:
+            raise ValueError(f"Intensity channel does not exist: pred_img shape={pred_img.shape}")
+                # --- [追加] TULIPがアップサンプリングした反射強度画像を20枚保存 ---
+        SAVE_INTENSITY_IMAGES = True
+        SAVE_INTENSITY_LIMIT = 20
+
+        if SAVE_INTENSITY_IMAGES and global_step <= SAVE_INTENSITY_LIMIT:
+            out_dir = os.path.join(args.output_dir, "intensity_images")
+            os.makedirs(out_dir, exist_ok=True)
+
+            # GPU Tensor -> CPU Tensor
+            pred_vis = pred_img.detach().float().cpu()
+            low_vis = images_low_res.detach().float().cpu()
+            gt_vis = images_high_res.detach().float().cpu()
+
+            # log_transformを使っている場合は元スケールに戻す
+            if args.log_transform:
+                pred_vis = torch.expm1(pred_vis)
+                low_vis = torch.expm1(low_vis)
+                gt_vis = torch.expm1(gt_vis)
+
+            print("pred_vis shape:", pred_vis.shape)
+            print("low_vis shape :", low_vis.shape)
+            print("gt_vis shape  :", gt_vis.shape)
+
+            if pred_vis.shape[1] < 2:
+                raise ValueError(
+                    f"Intensity channel does not exist. pred_vis shape = {pred_vis.shape}. "
+                    "Check --in_chans 2 and dataset loader."
+                )
+
+            # 2ch目がIntensity
+            pred_intensity = pred_vis[0, 1].numpy()
+            low_intensity = low_vis[0, 1].numpy()
+            gt_intensity = gt_vis[0, 1].numpy()
+
+            # lowは16x1024なので，比較用に64x1024へ拡大
+            low_intensity_up = cv2.resize(
+                low_intensity,
+                (gt_intensity.shape[1], gt_intensity.shape[0]),
+                interpolation=cv2.INTER_NEAREST
+            )
+
+            error_intensity = np.abs(pred_intensity - gt_intensity)
+
+            def save_gray(img, path):
+                img = img.astype(np.float32)
+                img = img - img.min()
+                img = img / (img.max() + 1e-8)
+                img = (img * 255).astype(np.uint8)
+                cv2.imwrite(path, img)
+
+            save_gray(low_intensity_up, os.path.join(out_dir, f"low_intensity_{global_step:06d}.png"))
+            save_gray(pred_intensity, os.path.join(out_dir, f"pred_intensity_{global_step:06d}.png"))
+            save_gray(gt_intensity, os.path.join(out_dir, f"gt_intensity_{global_step:06d}.png"))
+            save_gray(error_intensity, os.path.join(out_dir, f"error_intensity_{global_step:06d}.png"))
+
+            print(f"[Saved intensity images] step={global_step}, dir={out_dir}")
+
+        # if SAVE_INTENSITY_IMAGES and global_step >= SAVE_INTENSITY_LIMIT:
+        #     print("Finished saving 20 intensity image samples. Stop evaluation early.")
+        #     return
             
         if log_writer is not None:
 
@@ -389,8 +427,7 @@ def evaluate(data_loader, model, device, log_writer, args=None):
         # print(f"Saved point cloud: {save_name_pred}")
                 
                 # デバッグ表示（必要なければ消してOK）
-    if global_step % 100 == 0:
-                print(f"Saved point cloud: {save_name_pred}")
+    
 
         # local_stepのインクリメントはifの外で行う
     local_step += 1
@@ -447,9 +484,6 @@ def MCdrop(data_loader, model, device, log_writer, args=None):
 
     grid_size = args.grid_size
     global_step = 0
-        # --- [追加] 反射強度画像を保存する枚数 ---
-    intensity_save_count = 0
-    intensity_save_limit = 20
     total_loss = 0
     local_step = 0
     total_iou = 0

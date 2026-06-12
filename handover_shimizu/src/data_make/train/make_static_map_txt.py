@@ -74,7 +74,7 @@ from waymo_open_dataset import dataset_pb2 as open_dataset, label_pb2
 
 # txt内がstemの場合に探索する Waymo individual_files のルート（例: <root>/<subset>/<stem>.tfrecord）
 # ※既存のコマンド例に合わせたデフォルト。単一tfrecord指定（従来）には影響しない。
-DEFAULT_TFRECORD_ROOT = "/mnt/e/waymo/perception_v1.4.3/individual_files"
+DEFAULT_TFRECORD_ROOT = "\\172.22.40.107\e\waymo_tf\perception_v1.4.3\individual_files"
 
 # クラス別 BBox 拡張率（inside 拡大判定用）
 #        長さ(x)      幅(y)      高さ(z)
