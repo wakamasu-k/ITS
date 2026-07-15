@@ -278,7 +278,26 @@ def evaluate(data_loader, model, device, log_writer, args=None):
             elif args.dataset_select == "durlar":
                 pred_img = torch.where((pred_img >= 0.3/120) & (pred_img <= 1), pred_img, 0)
             elif args.dataset_select == "kitti":
-                pred_img = torch.where((pred_img >= 2/80) & (pred_img <= 1), pred_img, 0)
+    # pred_img: [B, C, H, W]
+    # 0ch = range, 1ch = intensity
+
+                if pred_img.shape[1] >= 2:
+                    pred_range = pred_img[:, 0:1, :, :]
+                    pred_intensity = pred_img[:, 1:2, :, :]
+
+                    valid_depth = (pred_range >= 2/80) & (pred_range <= 1)
+
+                    # Depthだけフィルタ
+                    pred_range = torch.where(valid_depth, pred_range, torch.zeros_like(pred_range))
+
+                    # IntensityはDepthが有効な点だけ残す
+                    pred_intensity = torch.where(valid_depth, pred_intensity, torch.zeros_like(pred_intensity))
+
+                    pred_img = torch.cat([pred_range, pred_intensity], dim=1)
+
+                else:
+                    pred_img = torch.where((pred_img >= 2/80) & (pred_img <= 1), pred_img, 0)
+                
             else:
                 print("Not Preprocess the pred image")
             
@@ -323,8 +342,14 @@ def evaluate(data_loader, model, device, log_writer, args=None):
                 pred_img[low_res_index, :] = images_low_res
 
                 # 3D Evaluation Metrics
-                pcd_pred = img_to_pcd_kitti(pred_img, maximum_range= 80)
-                pcd_gt = img_to_pcd_kitti(images_high_res, maximum_range = 80)
+                pcd_pred = img_to_pcd_kitti(pred_img, maximum_range=80)
+                pcd_gt = img_to_pcd_kitti(images_high_res, maximum_range=80)
+
+                # 追加：TULIPに実際に入力された低解像度画像を点群に戻す
+                pcd_low = img_to_pcd_kitti(images_low_res, maximum_range=80, low_res=True)
+
+                pcd_pred_xyz = pcd_pred[:, :3]
+                pcd_gt_xyz = pcd_gt[:, :3]
 
 
             elif args.dataset_select == "durlar":
@@ -349,18 +374,20 @@ def evaluate(data_loader, model, device, log_writer, args=None):
                 raise NotImplementedError(f"Cannot find the dataset: {args.dataset_select}")
 
 
-            pcd_all = np.vstack((pcd_pred, pcd_gt))
+            # 評価用はXYZだけを使う
+            pcd_all_xyz = np.vstack((pcd_pred_xyz, pcd_gt_xyz))
 
-            chamfer_dist = chamfer_distance(pcd_gt, pcd_pred)
+            chamfer_dist = chamfer_distance(pcd_gt_xyz, pcd_pred_xyz)
 
+            min_coord = np.min(pcd_all_xyz, axis=0)
+            max_coord = np.max(pcd_all_xyz, axis=0)
 
-            min_coord = np.min(pcd_all, axis=0)
-            max_coord = np.max(pcd_all, axis=0)
-            
-
-            # Voxelize the ground truth and prediction point clouds
-            voxel_grid_predicted = voxelize_point_cloud(pcd_pred, grid_size, min_coord, max_coord)
-            voxel_grid_ground_truth = voxelize_point_cloud(pcd_gt, grid_size, min_coord, max_coord)
+            voxel_grid_predicted = voxelize_point_cloud(
+                pcd_pred_xyz, grid_size, min_coord, max_coord
+            )
+            voxel_grid_ground_truth = voxelize_point_cloud(
+                pcd_gt_xyz, grid_size, min_coord, max_coord
+            )
 
 
 
@@ -374,7 +401,40 @@ def evaluate(data_loader, model, device, log_writer, args=None):
             evaluation_metrics['precision'].append(precision)
             evaluation_metrics['recall'].append(recall)
             evaluation_metrics['f1'].append(f1)
+            
+                        # Save low / pred / gt point clouds for multi-frame camera-intensity evaluation
+            # まずは保存数を抑えるため，1step目と1000stepごとだけ保存する
+            if args.save_pcd and args.dataset_select == "kitti" and (global_step == 1 or global_step % 1000 == 0):
+                pcd_outputpath = os.path.join(args.output_dir, 'pcd')
+                os.makedirs(pcd_outputpath, exist_ok=True)
 
+                save_name_pred = os.path.join(pcd_outputpath, f"pred_{global_step:06d}.ply")
+                save_name_gt = os.path.join(pcd_outputpath, f"gt_{global_step:06d}.ply")
+                save_name_low = os.path.join(pcd_outputpath, f"low_{global_step:06d}.ply")
+
+                def export_with_intensity(np_points, out_path):
+                    np_points = np.asarray(np_points, dtype=np.float32).copy()
+
+                    if np_points.ndim != 2:
+                        raise ValueError(f"Expected 2D points, got {np_points.shape}")
+
+                    if np_points.shape[1] >= 4:
+                        np_points[:, 3] = np.clip(np_points[:, 3], 0.0, 1.0)
+
+                    with open(out_path, 'w') as f:
+                        f.write("ply\n")
+                        f.write("format ascii 1.0\n")
+                        f.write(f"element vertex {len(np_points)}\n")
+                        f.write("property float x\n")
+                        f.write("property float y\n")
+                        f.write("property float z\n")
+                        f.write("property float intensity\n")
+                        f.write("end_header\n")
+                        np.savetxt(f, np_points[:, :4], fmt='%.6f %.6f %.6f %.6f')
+
+                export_with_intensity(pcd_pred, save_name_pred)
+                export_with_intensity(pcd_gt, save_name_gt)
+                export_with_intensity(pcd_low, save_name_low)
             if global_step % 100 == 0 or global_step == 1:
                 # --- [ここから一気に無効化] ---
                 """
@@ -402,27 +462,37 @@ def evaluate(data_loader, model, device, log_writer, args=None):
                 log_writer.add_scalar('Test/precision', precision, local_step)
                 log_writer.add_scalar('Test/recall', recall, local_step)
 
-    if args.save_pcd:
-        pcd_outputpath = os.path.join(args.output_dir, 'pcd')
-        os.makedirs(pcd_outputpath, exist_ok=True)
+    # if args.save_pcd:
+    #     pcd_outputpath = os.path.join(args.output_dir, 'pcd')
+    #     os.makedirs(pcd_outputpath, exist_ok=True)
 
-        save_name_pred = os.path.join(pcd_outputpath, f"pred_{global_step:06d}.ply")
-        save_name_gt = os.path.join(pcd_outputpath, f"gt_{global_step:06d}.ply")
+    #     save_name_pred = os.path.join(pcd_outputpath, f"pred_{global_step:06d}.ply")
+    #     save_name_gt = os.path.join(pcd_outputpath, f"gt_{global_step:06d}.ply")
+    #     save_name_low = os.path.join(pcd_outputpath, f"low_{global_step:06d}.ply")
+    #     def export_with_intensity(np_points, out_path):
+    #         np_points = np.asarray(np_points, dtype=np.float32).copy()
 
-        def export_with_intensity(np_points, out_path):
-            with open(out_path, 'w') as f:
-                f.write("ply\n")
-                f.write("format ascii 1.0\n")
-                f.write(f"element vertex {len(np_points)}\n")
-                f.write("property float x\n")
-                f.write("property float y\n")
-                f.write("property float z\n")
-                f.write("property float intensity\n")
-                f.write("end_header\n")
-                np.savetxt(f, np_points, fmt='%.6f %.6f %.6f %.6f')
+    #         if np_points.ndim != 2:
+    #             raise ValueError(f"Expected 2D points, got {np_points.shape}")
 
-        export_with_intensity(pcd_pred, save_name_pred)
-        export_with_intensity(pcd_gt, save_name_gt)
+    #         # intensity がある場合は 0〜1 に丸める
+    #         if np_points.shape[1] >= 4:
+    #             np_points[:, 3] = np.clip(np_points[:, 3], 0.0, 1.0)
+
+    #         with open(out_path, 'w') as f:
+    #             f.write("ply\n")
+    #             f.write("format ascii 1.0\n")
+    #             f.write(f"element vertex {len(np_points)}\n")
+    #             f.write("property float x\n")
+    #             f.write("property float y\n")
+    #             f.write("property float z\n")
+    #             f.write("property float intensity\n")
+    #             f.write("end_header\n")
+    #             np.savetxt(f, np_points[:, :4], fmt='%.6f %.6f %.6f %.6f')
+
+    #     export_with_intensity(pcd_pred, save_name_pred)
+    #     export_with_intensity(pcd_gt, save_name_gt)
+    #     export_with_intensity(pcd_low, save_name_low)
 
         # print(f"Saved point cloud: {save_name_pred}")
                 
@@ -445,7 +515,7 @@ def evaluate(data_loader, model, device, log_writer, args=None):
     with open(evaluation_file_path, 'w') as file:
         json.dump(evaluation_metrics, file)
 
-    print(print(f'Dictionary saved to {evaluation_file_path}'))
+    print(f'Dictionary saved to {evaluation_file_path}')
 
         
     # results = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
@@ -706,7 +776,7 @@ def MCdrop(data_loader, model, device, log_writer, args=None):
     with open(evaluation_file_path, 'w') as file:
         json.dump(evaluation_metrics, file) 
 
-    print(print(f'Dictionary saved to {evaluation_file_path}'))
+    print(f'Dictionary saved to {evaluation_file_path}')
 
     avg_loss = total_loss / global_step
     if log_writer is not None:

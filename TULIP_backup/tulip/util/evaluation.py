@@ -48,64 +48,108 @@ def img_to_pcd_durlar(img_range, maximum_range = 120):  # 1 x H x W cuda torch
 
     points[indices, :] = points_all
     return points
-def img_to_pcd_kitti(img_range, maximum_range = 120, low_res = False, intensity = None):
-    if low_res:
-        image_rows = 16
-    else:
-        image_rows = 64
+def img_to_pcd_kitti(img_range, maximum_range=120, low_res=False, intensity=None):
+    """
+    KITTI range image / range+intensity image を点群へ戻す関数。
+
+    入力:
+      [H, W]       : range only
+      [H, W, 2]    : range + intensity
+      [2, H, W]    : range + intensity
+
+    出力:
+      [N, 3]       : x, y, z
+      [N, 4]       : x, y, z, intensity
+    """
+    import numpy as np
+
+    image_rows = 16 if low_res else 64
     image_cols = 1024
-    
-    expected_size = image_rows * image_cols  # 1チャンネルあたりの理想の個数 (65536)
 
-    # --- 1. データの分離処理 (ここがエラー回避の肝) ---
-    # img_range全体の個数を確認 (2チャンネルなら 131072)
-    total_elements = img_range.size
+    img = np.asarray(img_range)
 
-    if total_elements == expected_size * 2:
-        # 1次元に平坦化してから半分に分ける（どんなshapeで来ても対応可能）
-        flat_data = img_range.flatten()
-        actual_range = flat_data[:expected_size]      # 前半：距離
-        actual_intensity = flat_data[expected_size:]  # 後半：反射強度
-        print(f"DEBUG: 2-channel data detected. Successfully split into Range and Intensity.")
-    else:
-        # 1チャンネルのみの場合
-        actual_range = img_range
+    actual_intensity = None
+
+    # -----------------------------
+    # 1. range と intensity を安全に分離
+    # -----------------------------
+
+    # [H, W, 2] の場合
+    if img.ndim == 3 and img.shape[-1] >= 2:
+        actual_range = img[..., 0]
+        actual_intensity = img[..., 1]
+
+    # [2, H, W] の場合
+    elif img.ndim == 3 and img.shape[0] >= 2:
+        actual_range = img[0, :, :]
+        actual_intensity = img[1, :, :]
+
+    # [H, W] の場合
+    elif img.ndim == 2:
+        actual_range = img
         actual_intensity = intensity
-        print(f"DEBUG: Single channel data detected (Size: {total_elements}).")
 
-    # --- 2. 幾何学的な角度計算 ---
+    else:
+        raise ValueError(f"Unexpected img_range shape: {img.shape}")
+
+    actual_range = np.asarray(actual_range, dtype=np.float32)
+
+    if actual_range.shape != (image_rows, image_cols):
+        actual_range = actual_range.reshape(image_rows, image_cols)
+
+    if actual_intensity is not None:
+        actual_intensity = np.asarray(actual_intensity, dtype=np.float32)
+        if actual_intensity.shape != (image_rows, image_cols):
+            actual_intensity = actual_intensity.reshape(image_rows, image_cols)
+
+    # -----------------------------
+    # 2. range をメートル単位へ戻す
+    # -----------------------------
+    # 評価中の pred_img / images_high_res は 0〜1 正規化されている想定
+    # そのため maximum_range を掛ける
+    length_img = actual_range * maximum_range
+
+    valid = np.isfinite(length_img) & (length_img > 0.0) & (length_img <= maximum_range)
+
+    # -----------------------------
+    # 3. 角度設定
+    # -----------------------------
     ang_start_y = 24.8
     ang_res_y = 26.8 / (image_rows - 1)
-    ang_res_x = 360 / image_cols
+    ang_res_x = 360.0 / image_cols
 
-    rowList = []
-    colList = []
-    for i in range(image_rows):
-        rowList = np.append(rowList, np.ones(image_cols) * i)
-        colList = np.append(colList, np.arange(image_cols))
+    rows, cols = np.indices((image_rows, image_cols))
 
-    verticalAngle = np.float32(rowList * ang_res_y) - ang_start_y
-    horizonAngle = - np.float32(colList + 1 - (image_cols / 2)) * ang_res_x + 90.0
-    
-    verticalAngle = verticalAngle / 180.0 * np.pi
-    horizonAngle = horizonAngle / 180.0 * np.pi
+    vertical_angle_deg = rows * ang_res_y - ang_start_y
 
-    # --- 3. 座標変換 ---
-    # 分離した actual_range を reshape (必ず 65536個 なのでエラーになりません)
-    lengthList = actual_range.reshape(expected_size) * maximum_range
+    # sample_kitti_dataset.py の colId 式の逆変換
+    horizontal_angle_deg = 90.0 - (cols - image_cols / 2.0) * ang_res_x
 
-    x = np.sin(horizonAngle) * np.cos(verticalAngle) * lengthList
-    y = np.cos(horizonAngle) * np.cos(verticalAngle) * lengthList
-    z = np.sin(verticalAngle) * lengthList
+    vertical_angle = np.deg2rad(vertical_angle_deg)
+    horizontal_angle = np.deg2rad(horizontal_angle_deg)
 
-    # --- 4. 点群の結合 (X, Y, Z, Intensity) ---
+    # -----------------------------
+    # 4. range から XYZ へ戻す
+    # -----------------------------
+    r = length_img
+
+    x = np.sin(horizontal_angle) * np.cos(vertical_angle) * r
+    y = np.cos(horizontal_angle) * np.cos(vertical_angle) * r
+    z = np.sin(vertical_angle) * r
+
+    # -----------------------------
+    # 5. 点群として返す
+    # -----------------------------
     if actual_intensity is not None:
-        actual_intensity = actual_intensity.reshape(expected_size)
-        points = np.column_stack((x, y, z, actual_intensity))
-    else:    
-        points = np.column_stack((x, y, z))
+        points = np.column_stack(
+            (x[valid], y[valid], z[valid], actual_intensity[valid])
+        )
+    else:
+        points = np.column_stack(
+            (x[valid], y[valid], z[valid])
+        )
 
-    return points
+    return points.astype(np.float32)
 
 def img_to_pcd_carla(img_range, maximum_range = 80):
     # img_range = np.flip(img_range)
