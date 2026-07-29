@@ -1,73 +1,134 @@
 # TULIP Waymo Intensity Upsampling
 
-Waymo Open Datasetの距離・反射強度画像をTULIPでアップサンプリングするための、
-独立した研究用プロジェクトです。
+Waymo Open DatasetのTOP LiDARを使い、TULIPによる距離・反射強度の
+アップサンプリングを検証する独立プロジェクトです。
 
-このフォルダは次の既存フォルダをimportせず、別タスクとして管理します。
+## 研究上の基準
 
-- `TULIP_backup`
-- `TULIP_waymo_16to32`
-- `handover_shimizu`
+前処理仕様は次の資料と実データを基準にします。
 
-## 最初に行うこと
+- `E:/shimizu.k.pdf` 第3章、特に3.2～3.3節
+- `E:/JSPE202612__shimizu_k_final.pdf`
+- 元データ: `W:/waymo_tf/perception_v1.4.3/individual_files`
+- 32ライン成果物: `W:/32line`
 
-いきなり学習を始めず、まずWaymoから取り出した1フレームの内容を検査します。
-入力NPZは次の配列を持つものとします。
+既存の `TULIP_waymo_16to32` は参照実装としてのみ扱い、このプロジェクトから
+importしません。
 
-- `range`: 距離画像 `[H, W]`、単位m
-- `intensity`: 反射強度画像 `[H, W]`
-- `valid_mask`: 有効画素マスク `[H, W]`（省略時は `range > 0`）
+## 2つのデータ処理を分離する
 
-### 1. 環境確認
+### A. TULIP用の1フレームRange Image
+
+```text
+Waymo TFRecord
+  -> TOP LiDAR first return [64,W,C]
+  -> range/intensity/mask [64,W]
+  -> 偶数ring [0,2,...,62] の32ラインGT
+  -> さらに16ライン入力
+  -> TULIPで16->32を学習・評価
+```
+
+この段階では車両姿勢による時系列重畳、動的物体除去、カメラ投影、
+CLAHEを行いません。TULIPが復元する物理量を加工前の値で評価するためです。
+
+### B. 清水研究の静的点群地図（後段）
+
+```text
+各フレームのTOP LiDAR
+  -> 偶数ringで32ライン化
+  -> 車両・歩行者・自転車などの動的点をBBoxで除去
+  -> 車体近傍点を除去
+  -> vehicle座標からglobal座標へ変換
+  -> 全時刻を重畳してmap_static.npz
+  -> FRONTカメラへz-buffer投影
+  -> 99.5 percentile正規化
+  -> masked histogram equalization
+  -> CLAHE
+  -> 反射強度画像
+```
+
+TULIP出力を将来この処理へ入力し、自己位置推定性能が改善するか評価します。
+
+## 実行順序
+
+### 0. 環境確認
 
 ```bash
+source /home/wakamatsu/ITS/.venv_waymo/bin/activate
 cd /home/wakamatsu/ITS/TULIP_waymo_intensity_upsampling
 bash scripts/00_check_environment.sh
 ```
 
-できること:
+確認できること:
 
-- Pythonの場所とバージョンを確認
-- NumPy、PyTorch、TensorFlow、Waymo関連パッケージの有無を確認
-- ファイルの作成やデータ変更は行わない
+- TensorFlow、Waymo SDK、NumPy、PyTorchの利用可否
+- データは変更しない
 
-### 2. 1フレーム検査
+### 1. 元データと32ライン成果物の監査
 
 ```bash
+source /home/wakamatsu/ITS/.venv_tulip/bin/activate
 cd /home/wakamatsu/ITS/TULIP_waymo_intensity_upsampling
-python tools/inspect_waymo_npz.py \
-  --input /path/to/frame_000000.npz \
-  --output outputs/frame_000000_report.json
+python tools/audit_shimizu_dataset.py \
+  --waymo-root /mnt/w/waymo_tf/perception_v1.4.3/individual_files \
+  --line32-root /mnt/w/32line \
+  --output outputs/shimizu_dataset_audit.json
 ```
 
-できること:
+生成物:
 
-- 距離・反射強度・マスクの形状一致を確認
-- NaN、Inf、負の距離、マスク外の値を検出
-- 有効点数、値域、平均、標準偏差、パーセンタイルを集計
-- 結果をJSONへ保存
+- `outputs/shimizu_dataset_audit.json`
+- TFRecord split件数
+- `maps/training`、`cam_gray/training`のscene数
+- TFRecordと32ライン成果物で共通するscene
+- 代表`map_static.npz`の配列名・shape・dtype
+- `render_profile.json`に記録された32ライン化条件
+
+### 2. 同一フレームの64ライン・32ラインを抽出
+
+```bash
+source /home/wakamatsu/ITS/.venv_waymo/bin/activate
+cd /home/wakamatsu/ITS/TULIP_waymo_intensity_upsampling
+
+python waymo_preprocess/export_one_frame_64_32.py \
+  --tfrecord /mnt/w/waymo_tf/perception_v1.4.3/individual_files/training/segment-1005081002024129653_5313_150_5333_150_with_camera_labels.tfrecord \
+  --frame-index 0 \
+  --output-dir outputs/one_frame_000000
+```
+
+生成物:
+
+- `waymo_top_frame_000000.npz`
+  - `range_64`, `intensity_64`, `valid_mask_64`
+  - `range_32`, `intensity_32`, `valid_mask_32`
+  - `ring_ids_32=[0,2,...,62]`
+- `metadata.json`
+  - scene名、timestamp、shape、値域、有効画素数、使用ring
+
+この32ラインは修論の「64ラインから走査線を1本おきに間引く」処理と同じ
+偶数ring規則です。
 
 ### 3. テスト
 
 ```bash
+source /home/wakamatsu/ITS/.venv_tulip/bin/activate
 cd /home/wakamatsu/ITS/TULIP_waymo_intensity_upsampling
 python -m unittest discover -s tests -v
 ```
 
-できること:
+確認できること:
 
-- 検査コードが正常データを正しく集計できることを確認
-- 形状不一致をエラーとして検出できることを確認
+- 64->32が偶数ringの厳密な部分集合であること
+- 距離・反射強度・maskの対応が崩れていないこと
+- 異常shapeを拒否できること
 
-## 今後の順番
+## 次に実装するもの
 
-1. Waymo TFRecordからTOP LiDARのrange/intensityを1フレーム抽出
-2. native 64ライン画像を固定スケールで可視化
-3. 64ラインからGTと低解像度入力を同一画素規則で作成
-4. 低解像度を元の角度行へ戻せることを確認
-5. TULIP用Datasetと入出力アダプターを実装
-6. 1フレーム推論
-7. 複数sceneで学習・評価分割を作成
-8. 距離と反射強度を別々のmask付き指標で評価
-
-学習コードは、手順1～4でデータの対応関係を確認してから追加します。
+1. 32ラインGTから16ライン入力を作る
+2. 64/32/16の固定スケール可視化
+3. 32->16->32のring対応を検証
+4. TULIP Datasetアダプター
+5. 1フレーム推論
+6. scene単位のtrain/validation/test分割
+7. 複数sceneの距離・反射強度評価
+8. TULIP出力を静的点群地図生成へ接続
