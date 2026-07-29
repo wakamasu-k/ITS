@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Generated diagnostics and exported frame data.
+debug/
+outputs/
+*.npz
