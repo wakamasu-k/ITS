@@ -2208,3 +2208,63 @@ success_xy@2.0m: 0.25
 success_xy@5.0m: 0.40
 success_xy@10.0m: 1.00
 10m以内には全クエリ入っているが，1〜2m以内の高精度位置推定はまだ弱い
+
+NetVLADに入れる直前から、出る直後までの時間
+(.venv_waymo) wakamatsu@1973700X:~/ITS/handover_shimizu/src/retrieval$ grep "\[TIMING\]\[netvlad\] kind=cam" \
+  "$HOME/ITS/waymo_outputs/timing/retrieval_netvlad_timing_paper80_epoch058_10.log" \
+  | head -10
+[TIMING][netvlad] kind=cam netvlad_sec=1.274538
+[TIMING][netvlad] kind=cam netvlad_sec=0.019145
+[TIMING][netvlad] kind=cam netvlad_sec=0.010699
+[TIMING][netvlad] kind=cam netvlad_sec=0.007669
+[TIMING][netvlad] kind=cam netvlad_sec=0.006708
+[TIMING][netvlad] kind=cam netvlad_sec=0.007034
+[TIMING][netvlad] kind=cam netvlad_sec=0.007282
+[TIMING][netvlad] kind=cam netvlad_sec=0.007270cd ~/ITS/handover_shimizu/src/LoFTR
+source ~/ITS/.venv_waymo/bin/activate
+export PYTHONPATH="$PWD/src:$PYTHONPATH"
+
+MANIFEST="/mnt/w/32line/datasets/loftr_pairs_shifted/training/manifest_matches_step2a_paper_final_wdrive.csv"
+INIT_CKPT="./weights/mega_depth/outdoor_ds.ckpt"
+OUT_DIR="$HOME/ITS/waymo_outputs/old32_dense/loftr_retrain_stage1_smoke_wdrive"
+
+mkdir -p "$OUT_DIR"
+学習モデル
+python tools/train_stage1_step2a_backbone0_coarse_fast_bf16v2.py \
+  --manifest "$MANIFEST" \
+  --out-dir "$OUT_DIR" \
+  --device cuda \
+  --epochs 1 \
+  --max-steps 20 \
+  --max-steps-total 20 \
+  --init-ckpt "$INIT_CKPT" \
+  --lr-backbone0 1e-5 \
+  --lr-coarse 1e-4 \
+  --weight-decay 0.0 \
+  --min-matches 8 \
+  --skip-error-rows \
+  --no-verify-files \
+  --dataset-mode fine_remap \
+  --resize-long 840 \
+  --num-workers 2 \
+  --prefetch-factor 2 \
+  --amp-dtype bf16 \
+  --save-every 10 \
+  --seed 0 \
+  | tee "$OUT_DIR/train_stage1_smoke.log"
+[TIMING][netvlad] kind=cam netvlad_sec=0.006702
+[TIMING][netvlad] kind=cam netvlad_sec=0.012166
+
+
+PnP
+total_sec =
+[5.184125,
+ 0.154270,
+ 0.153548,
+ 0.153484,
+ 0.189061,
+ 0.153652,
+ 0.140239,
+ 0.156354,
+ 0.137958,
+ 0.138221]
