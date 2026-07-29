@@ -1,0 +1,21 @@
+# Waymo TULIP 16-to-32 line experiment configuration scaffold.
+# Values marked null must be determined from the inspected Waymo data.
+
+dataset:
+  native_lidar: TOP
+  source_return: first
+  native_height: 64
+  gt_height: 32
+  input_height: 16
+  native_width: null
+  maximum_range_m: null
+  intensity_scale: null
+
+model:
+  in_chans: 2
+  output_chans: 2
+  pad_width: null
+
+paths:
+  data_root: /mnt/w/waymo_tulip_16to32
+  debug_root: /mnt/w/waymo_tulip_16to32/debug
