@@ -1,0 +1,9 @@
+# Generated one-frame and camera-comparison artifacts.
+debug_outputs/
+
+# Local snapshots retained for manual recovery, not active source files.
+*.bak
+*.bak_*
+
+# Accidental empty shell-output file seen in this workspace.
+/0
