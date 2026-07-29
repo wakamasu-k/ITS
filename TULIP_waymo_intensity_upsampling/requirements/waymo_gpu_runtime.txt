@@ -1,0 +1,7 @@
+# TensorFlow version is constrained by waymo-open-dataset-tf-2-12-0.
+tensorflow==2.12.0
+waymo-open-dataset-tf-2-12-0==1.6.7
+
+# TensorFlow 2.12 is built for CUDA 11.8 and cuDNN 8.
+nvidia-cudnn-cu11==8.6.0.163
+nvidia-cublas-cu11==11.11.3.6
