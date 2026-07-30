@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 REQUIRED_COLUMNS = ("q_subset", "q_seg", "q_frame_index", "q_meta_json")
 OUTPUT_COLUMNS = (
@@ -53,9 +53,13 @@ def read_camera_identity(path: Path) -> tuple[int, int]:
     return frame_index, timestamp
 
 def build_frame_rows(manifest: Path, line32_root: Path, waymo_root: Path, *,
-                     path_maps: Sequence[tuple[Path, Path]] = ()) -> list[dict[str, str]]:
+                     path_maps: Sequence[tuple[Path, Path]] = (),
+                     progress_every: int = 0,
+                     progress: Callable[[int, int], None] | None = None
+                     ) -> list[dict[str, str]]:
     frames: dict[tuple[str, str, int], dict[str, str]] = {}
     counts: dict[tuple[str, str, int], int] = {}
+    metadata_cache: dict[str, tuple[Path, int, int]] = {}
     with manifest.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         missing = [name for name in REQUIRED_COLUMNS if name not in (reader.fieldnames or ())]
@@ -70,8 +74,14 @@ def build_frame_rows(manifest: Path, line32_root: Path, waymo_root: Path, *,
                 raise ValueError(f"line {line}: invalid q_frame_index") from exc
             if not subset or not segment or frame_index < 0:
                 raise ValueError(f"line {line}: invalid query identity")
-            metadata = resolve_camera_json(source["q_meta_json"], line32_root, path_maps)
-            json_index, timestamp = read_camera_identity(metadata)
+            raw_metadata = source["q_meta_json"]
+            cached = metadata_cache.get(raw_metadata)
+            if cached is None:
+                metadata = resolve_camera_json(raw_metadata, line32_root, path_maps)
+                json_index, timestamp = read_camera_identity(metadata)
+                metadata_cache[raw_metadata] = (metadata, json_index, timestamp)
+            else:
+                metadata, json_index, timestamp = cached
             if json_index != frame_index:
                 raise ValueError(f"line {line}: frame index mismatch: "
                                  f"{frame_index} != {json_index}")
@@ -92,6 +102,8 @@ def build_frame_rows(manifest: Path, line32_root: Path, waymo_root: Path, *,
             else:
                 frames[key] = row
                 counts[key] = 1
+            if progress and progress_every > 0 and (line - 1) % progress_every == 0:
+                progress(line - 1, len(frames))
     rows = []
     for key in sorted(frames):
         row = frames[key]

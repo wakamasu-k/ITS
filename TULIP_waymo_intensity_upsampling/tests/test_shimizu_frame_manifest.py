@@ -55,6 +55,20 @@ class ShimizuFrameManifestTest(unittest.TestCase):
         self.assertEqual(rows[0]["source_manifest_rows"], "2")
         self.assertEqual(rows[0]["tfrecord_exists"], "true")
 
+    def test_reports_progress_and_caches_repeated_metadata(self):
+        metadata = self.camera_json("training", "segment-a", 0, 10)
+        manifest = self.manifest([
+            {"q_subset": "training", "q_seg": "segment-a", "q_frame_index": "0",
+             "q_meta_json": str(metadata), "anchor_id": str(anchor)}
+            for anchor in range(3)])
+        reports = []
+        rows = build_frame_rows(
+            manifest, self.line32, self.waymo, progress_every=2,
+            progress=lambda source_rows, unique_frames:
+                reports.append((source_rows, unique_frames)))
+        self.assertEqual(reports, [(2, 1)])
+        self.assertEqual(rows[0]["source_manifest_rows"], "3")
+
     def test_subset_is_part_of_deduplication_key(self):
         rows = []
         for subset, timestamp in (("training", 10), ("validation", 20)):

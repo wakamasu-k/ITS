@@ -25,6 +25,9 @@ cd /home/wakamatsu/ITS/TULIP_waymo_intensity_upsampling
 bash scripts/35_build_shimizu_frame_manifest.sh
 ```
 
+開始時と1,000入力行ごとに進捗を表示します。同じ `q_meta_json` はキャッシュし、
+anchorごとに同じJSONを読み直しません。
+
 出力は `outputs/shimizu_frame_manifest.csv` です。カメラJSONがない、
 JSONのframe indexがmanifestと異なる、または同一キーでtimestampが競合する場合は
 処理を停止します。元TFRecordがない場合も既定で停止します。

@@ -19,13 +19,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--path-map", action="append", default=[], metavar="OLD=NEW")
     parser.add_argument("--allow-missing-tfrecord", action="store_true")
+    parser.add_argument("--progress-every", type=int, default=1000)
     return parser.parse_args()
 
 def main() -> None:
     args = parse_args()
+    if args.progress_every < 0:
+        raise ValueError("--progress-every must be non-negative")
+    print(f"reading_manifest={args.input_manifest}", flush=True)
     rows = build_frame_rows(
         args.input_manifest, args.line32_root, args.waymo_root,
-        path_maps=parse_path_maps(args.path_map))
+        path_maps=parse_path_maps(args.path_map),
+        progress_every=args.progress_every,
+        progress=lambda source_rows, unique_frames: print(
+            f"progress source_rows={source_rows} unique_frames={unique_frames}",
+            flush=True))
     missing = [row for row in rows if row["tfrecord_exists"] != "true"]
     if missing and not args.allow_missing_tfrecord:
         examples = ", ".join(
