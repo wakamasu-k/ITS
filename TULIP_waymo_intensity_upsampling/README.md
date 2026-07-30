@@ -122,6 +122,40 @@ python -m unittest discover -s tests -v
 - 距離・反射強度・maskの対応が崩れていないこと
 - 異常shapeを拒否できること
 
+### 4. 引き継ぎmanifestを1フレーム1行へ変換
+
+LoFTR用ペアmanifestをWaymoフレーム単位へ集約し、segment、frame index、
+timestamp、元TFRecordを照合します。
+
+```bash
+source /home/wakamatsu/ITS/.venv_tulip/bin/activate
+cd /home/wakamatsu/ITS/TULIP_waymo_intensity_upsampling
+bash scripts/40_build_handover_frame_manifest.sh
+```
+
+TFRecord本文まで読む厳密照合はWaymo環境で明示的に実行します。
+
+```bash
+source /home/wakamatsu/ITS/.venv_waymo/bin/activate
+bash scripts/40_build_handover_frame_manifest.sh --verify-tfrecord
+```
+
+詳細は [`docs/handover_frame_manifest.md`](docs/handover_frame_manifest.md) を参照してください。
+
+### 5. 清水研究の評価GTをフレーム対応表へ変換
+
+`manifest_cross_eval_gt_v3.csv` を `q_subset/q_seg/q_frame_index` で集約し、
+カメラJSONのtimestampと元TFRecordの存在を確認します。
+
+```bash
+source /home/wakamatsu/ITS/.venv_tulip/bin/activate
+cd /home/wakamatsu/ITS/TULIP_waymo_intensity_upsampling
+bash scripts/35_build_shimizu_frame_manifest.sh
+```
+
+詳細は [`docs/inherited_frame_correspondence.md`](docs/inherited_frame_correspondence.md)
+を参照してください。
+
 ## 次に実装するもの
 
 1. 32ラインGTから16ライン入力を作る
