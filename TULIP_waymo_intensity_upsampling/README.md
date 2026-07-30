@@ -156,13 +156,72 @@ bash scripts/35_build_shimizu_frame_manifest.sh
 詳細は [`docs/inherited_frame_correspondence.md`](docs/inherited_frame_correspondence.md)
 を参照してください。
 
+### 6. manifestから64/32ラインを段階的に抽出
+
+最初にTFRecordを読まないdry-runで計画を確認します。
+
+```bash
+source /home/wakamatsu/ITS/.venv_tulip/bin/activate
+bash scripts/45_export_shimizu_frames_64_32.sh --dry-run --max-frames 1
+```
+
+実抽出はWaymo環境で1フレームから開始します。
+
+```bash
+source /home/wakamatsu/ITS/.venv_waymo/bin/activate
+bash scripts/45_export_shimizu_frames_64_32.sh --max-frames 1 --resume
+```
+
+進捗まとめは [`docs/progress_2026-07-30.md`](docs/progress_2026-07-30.md) を
+参照してください。
+
+### 7. 64/32ラインを監査し16→32ペアを生成
+
+```bash
+source /home/wakamatsu/ITS/.venv_tulip/bin/activate
+bash scripts/50_audit_and_prepare_shimizu_16_32.sh \
+  --max-frames 5 --prepare-16 --resume
+```
+
+shape、偶数ringの完全一致、NaN/Inf、manifest identityを監査し、
+`tulip_16_32.npz` を各フレームへ保存します。
+
 ## 次に実装するもの
 
-1. 32ラインGTから16ライン入力を作る
-2. 64/32/16の固定スケール可視化
-3. 32->16->32のring対応を検証
+1. 64/32/16の固定スケール可視化
+2. intensity外れ値のclip/log変換比較
+3. 16->32のring対応を可視化で検証
 4. TULIP Datasetアダプター
 5. 1フレーム推論
 6. scene単位のtrain/validation/test分割
 7. 複数sceneの距離・反射強度評価
 8. TULIP出力を静的点群地図生成へ接続
+
+7/30
+
+現在まで進んだこと
+waymoの64ラインを取得
+偶数から32ラインのGTを作成
+range・intensity・valid maskの対応を維持
+q_subset / q_seg / q_frame_index / timestamp を対応付け
+元TFRecord欠損が0件であることを確認
+代表1フレームの実抽出に成功
+manifest生成処理をGitHubへpush済み
+代表フレームでは以下を確認できています
+
+64ライン: [64, 2650]
+32ライン: [32, 2650]
+64ライン有効画素: 152,616
+32ライン有効画素: 76,240
+
+工夫した点
+TULIP用の加工前Range Imageと、清水研究の静的地図処理を分離
+segment・frame index・timestampの三点でフレームを照合
+Waymoのcontext名とTFRecordファイル名の表記差を正規化
+同じカメラJSONをキャッシュして重複読込を削減
+segment単位でTFRecordを1回だけ走査する設計
+--dry-run と --max-frames で段階的に確認可能
+--resume ではNPZ・metadata・identityが一致した場合だけスキップ
+一時ファイルから置換する原子的保存
+エラーを failures.csv に記録
+TensorFlowとWaymo SDKを実処理時までimportしない
