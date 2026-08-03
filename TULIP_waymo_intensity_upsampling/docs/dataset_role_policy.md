@@ -57,3 +57,23 @@ outputs/shimizu_pairs_32_to_64/failures.csv
 
 `index.csv` は必ず `dataset_role` を持つ。Datasetアダプターは明示的に要求したroleの
 行だけをロードし、evaluationを暗黙にtrainingへ流用しないものとする。
+
+## Datasetアダプター
+
+```python
+from pathlib import Path
+from tulip_adapter import Waymo32To64Dataset
+
+dataset = Waymo32To64Dataset(
+    Path("outputs/shimizu_pairs_32_to_64/index.csv"),
+    dataset_role="localization_evaluation",
+    intensity_transform="raw",
+)
+```
+
+返却shapeはPyTorch形式の `input [2,32,W]`、`target [2,64,W]` である。
+`generated_mask [64,W]` は奇数ringかつGT有効な画素だけTrueとなり、主lossに使う。
+`dataset_role="train"` を指定して評価indexしかない場合は空Datasetにせずエラーとする。
+
+intensityは `raw` と `log1p` を選択できる。最終採用方式はtraining segment全体の
+統計を算出してから固定する。
