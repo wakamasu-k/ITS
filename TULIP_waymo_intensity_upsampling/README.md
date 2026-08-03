@@ -199,6 +199,24 @@ bash scripts/55_build_shimizu_32_to_64_pairs.sh --max-frames 5 --resume
 引き継ぎ881フレームは既定で `localization_evaluation` とし、学習へ混ぜません。
 詳細は [`docs/dataset_role_policy.md`](docs/dataset_role_policy.md) を参照してください。
 
+### 9. 学習用segmentを評価segmentと分離
+
+TFRecordの中身は読まず、ファイル名だけからsegment単位の80/10/10分割を確認します。
+
+```bash
+source /home/wakamatsu/ITS/.venv_tulip/bin/activate
+bash scripts/60_build_training_segment_manifest.sh --dry-run
+```
+
+問題がなければCSVを生成します。
+
+```bash
+bash scripts/60_build_training_segment_manifest.sh
+```
+
+清水評価用881フレームと同じsegmentは自動除外されます。詳細は
+[`docs/training_segment_split.md`](docs/training_segment_split.md) を参照してください。
+
 ## 次に実装するもの
 
 1. 64/32/16の固定スケール可視化
@@ -206,7 +224,7 @@ bash scripts/55_build_shimizu_32_to_64_pairs.sh --max-frames 5 --resume
 3. 16->32のring対応を可視化で検証
 4. 32→64 TULIP Datasetアダプター
 5. 1フレーム推論
-6. scene単位のtrain/validation/test分割
+6. 学習segmentからフレームを間引いて32→64ペアを生成
 7. 複数sceneの距離・反射強度評価
 8. TULIP出力を静的点群地図生成へ接続
 

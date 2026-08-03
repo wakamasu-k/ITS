@@ -66,9 +66,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-frames", type=int)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument(
-        "--dataset-role", default="localization_evaluation",
-        choices=("localization_evaluation", "train", "validation", "test"))
     return parser.parse_args()
 
 def write_csv(path: Path, fields, rows) -> None:
@@ -83,7 +80,7 @@ def main() -> None:
     items = load_export_items(args.manifest, args.max_frames)
     if args.dry_run:
         print(json.dumps({
-            "selected_frames": len(items), "dataset_role": args.dataset_role,
+            "selected_frames": len(items), "dataset_role": "localization_evaluation",
             "would_build": sum(
                 output_paths(args.input_root, item)[0].is_file() for item in items),
         }, ensure_ascii=False, indent=2))
@@ -103,7 +100,7 @@ def main() -> None:
                 with np.load(frame_npz, allow_pickle=False) as data:
                     arrays, metadata = build_pair(data)
                 metadata.update({
-                    "dataset_role": args.dataset_role,
+                    "dataset_role": "localization_evaluation",
                     "subset": item.subset,
                     "segment_id": item.segment_id,
                     "frame_index": item.frame_index,
@@ -114,7 +111,7 @@ def main() -> None:
                 atomic_json(pair_json, metadata)
                 built += 1
             rows.append(index_row(
-                item, pair_npz, pair_json, metadata, args.dataset_role))
+                item, pair_npz, pair_json, metadata, "localization_evaluation"))
             print(f"paired {position}/{len(items)} "
                   f"{item.segment_id}#{item.frame_index}", flush=True)
         except Exception as exc:
@@ -129,7 +126,7 @@ def main() -> None:
     summary = {
         "selected_frames": len(items), "indexed_pairs": len(rows),
         "built_pairs": built, "resume_skipped": skipped,
-        "failed_pairs": len(failures), "dataset_role": args.dataset_role,
+        "failed_pairs": len(failures), "dataset_role": "localization_evaluation",
         "index_output": str(args.index_output),
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
