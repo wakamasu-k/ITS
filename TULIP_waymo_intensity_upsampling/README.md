@@ -186,12 +186,25 @@ bash scripts/50_audit_and_prepare_shimizu_16_32.sh \
 shape、偶数ringの完全一致、NaN/Inf、manifest identityを監査し、
 `tulip_16_32.npz` を各フレームへ保存します。
 
+16→32は補助検証に限定し、主タスクは32→64とします。
+
+### 8. 32→64学習ペアを生成
+
+```bash
+source /home/wakamatsu/ITS/.venv_tulip/bin/activate
+bash scripts/55_build_shimizu_32_to_64_pairs.sh --max-frames 5 --resume
+```
+
+`input_32 [32,W,2]`、`target_64 [64,W,2]` と追跡用index CSVを生成します。
+引き継ぎ881フレームは既定で `localization_evaluation` とし、学習へ混ぜません。
+詳細は [`docs/dataset_role_policy.md`](docs/dataset_role_policy.md) を参照してください。
+
 ## 次に実装するもの
 
 1. 64/32/16の固定スケール可視化
 2. intensity外れ値のclip/log変換比較
 3. 16->32のring対応を可視化で検証
-4. TULIP Datasetアダプター
+4. 32→64 TULIP Datasetアダプター
 5. 1フレーム推論
 6. scene単位のtrain/validation/test分割
 7. 複数sceneの距離・反射強度評価
