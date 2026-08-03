@@ -229,6 +229,17 @@ bash scripts/65_export_training_frames_64_32.sh --dry-run
 最小実抽出と再開方法は
 [`docs/training_frame_export.md`](docs/training_frame_export.md) を参照してください。
 
+### 11. role付き32→64学習ペアを生成
+
+```bash
+source /home/wakamatsu/ITS/.venv_tulip/bin/activate
+bash scripts/70_build_training_32_to_64_pairs.sh --dry-run
+bash scripts/70_build_training_32_to_64_pairs.sh --resume
+```
+
+train/validation/testを入力indexからそのまま継承します。詳細は
+[`docs/training_pair_build.md`](docs/training_pair_build.md) を参照してください。
+
 ## 次に実装するもの
 
 1. 64/32/16の固定スケール可視化
