@@ -30,13 +30,19 @@ def load_index(index_csv: Path, dataset_role: str) -> list[dict[str, str]]:
             f"no rows for dataset_role={dataset_role!r}; available={available}")
     return rows
 
-def transform_intensity(values: np.ndarray, mode: str) -> np.ndarray:
-    result = np.asarray(values, dtype=np.float32)
+def transform_intensity(values: np.ndarray, mode: str,
+                        valid_mask: np.ndarray) -> np.ndarray:
+    result = np.asarray(values, dtype=np.float32).copy()
+    mask = np.asarray(valid_mask, dtype=bool)
+    if result.shape != mask.shape:
+        raise ValueError("intensity and valid mask shapes differ")
     if mode == "raw":
         return result
     if mode == "log1p":
-        if np.any(result < 0):
-            raise ValueError("log1p intensity transform requires non-negative values")
+        if np.any(result[mask] < 0):
+            raise ValueError(
+                "log1p intensity transform requires non-negative valid values")
+        result[~mask] = 0.0
         return np.log1p(result).astype(np.float32)
     raise ValueError(f"unsupported intensity_transform: {mode}")
 
@@ -68,8 +74,10 @@ def load_pair(path: Path, intensity_transform: str) -> dict[str, np.ndarray]:
         raise ValueError("observed target rows mismatch")
     if not np.array_equal(generated, np.arange(1, 64, 2)):
         raise ValueError("generated target rows mismatch")
-    input_32[..., 1] = transform_intensity(input_32[..., 1], intensity_transform)
-    target_64[..., 1] = transform_intensity(target_64[..., 1], intensity_transform)
+    input_32[..., 1] = transform_intensity(
+        input_32[..., 1], intensity_transform, input_mask)
+    target_64[..., 1] = transform_intensity(
+        target_64[..., 1], intensity_transform, target_mask)
     generated_mask = np.zeros_like(target_mask)
     generated_mask[generated] = target_mask[generated]
     return {

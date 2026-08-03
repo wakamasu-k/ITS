@@ -68,5 +68,17 @@ class Waymo32To64DatasetTest(unittest.TestCase):
         np.testing.assert_allclose(pair["target"][0], 4)
         np.testing.assert_allclose(pair["target"][1], np.log1p(7))
 
+    def test_log1p_replaces_negative_invalid_sentinel_with_zero(self):
+        with np.load(self.pair, allow_pickle=False) as loaded:
+            values = {name: loaded[name] for name in loaded.files}
+        values["input_32"][0, 0, 1] = -1
+        values["target_64"][0, 0, 1] = -1
+        values["input_valid_mask_32"][0, 0] = False
+        values["target_valid_mask_64"][0, 0] = False
+        np.savez_compressed(self.pair, **values)
+        pair = load_pair(self.pair, "log1p")
+        self.assertEqual(float(pair["input"][1, 0, 0]), 0.0)
+        self.assertEqual(float(pair["target"][1, 0, 0]), 0.0)
+
 if __name__ == "__main__":
     unittest.main()

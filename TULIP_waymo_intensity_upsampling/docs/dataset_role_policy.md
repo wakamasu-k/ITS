@@ -77,3 +77,5 @@ dataset = Waymo32To64Dataset(
 
 intensityは `raw` と `log1p` を選択できる。最終採用方式はtraining segment全体の
 統計を算出してから固定する。
+Waymo配列のmask外intensityには `-1` sentinelが入るため、`log1p` ではmask外を
+0へ置換し、有効画素だけ非負性を検証する。rawモードでは元値とmaskを保持する。
