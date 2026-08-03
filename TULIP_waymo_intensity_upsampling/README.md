@@ -217,6 +217,18 @@ bash scripts/60_build_training_segment_manifest.sh
 清水評価用881フレームと同じsegmentは自動除外されます。詳細は
 [`docs/training_segment_split.md`](docs/training_segment_split.md) を参照してください。
 
+### 10. 学習用64/32フレームを段階抽出
+
+まずTFRecordを開かないdry-runで、既定240フレームの計画を確認します。
+
+```bash
+source /home/wakamatsu/ITS/.venv_waymo/bin/activate
+bash scripts/65_export_training_frames_64_32.sh --dry-run
+```
+
+最小実抽出と再開方法は
+[`docs/training_frame_export.md`](docs/training_frame_export.md) を参照してください。
+
 ## 次に実装するもの
 
 1. 64/32/16の固定スケール可視化

@@ -58,7 +58,10 @@ def write_failure_rows(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writeheader()
         writer.writerows(rows)
 
-def export_selected_frame(item: ExportItem, frame: Any, output_root: Path) -> None:
+def export_selected_frame(item: ExportItem, frame: Any, output_root: Path, *,
+                          dataset_role: str = "localization_evaluation",
+                          source_subset: str | None = None) -> None:
+    source_subset = source_subset or item.subset
     from waymo_preprocess.export_one_frame_64_32 import (
         PREPROCESSING_VERSION, extract_range_intensity, select_even_rings,
         top_first_return, valid_stats,
@@ -82,8 +85,9 @@ def export_selected_frame(item: ExportItem, frame: Any, output_root: Path) -> No
     })
     atomic_json(metadata_path, {
         "preprocessing_version": PREPROCESSING_VERSION,
+        "dataset_role": dataset_role,
         "segment_id": item.segment_id,
-        "source_subset": item.subset,
+        "source_subset": source_subset,
         "source_tfrecord": str(item.tfrecord),
         "source_frame_index": item.frame_index,
         "context_name": context_name,
