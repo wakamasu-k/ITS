@@ -9,7 +9,8 @@ sys.path.insert(0, str(ROOT))
 from tulip_adapter import Waymo32To64Dataset
 from tulip_adapter.range_only_evaluation import (interpolate_32_to_64,
     masked_metrics, prediction_statistics, save_difference_image)
-from tulip_adapter.range_only_training import prepare_range_batch
+from tulip_adapter.range_only_training import (normalize_ranges,
+    prepare_range_batch, restore_range_meters, validate_range_scale)
 from tulip_adapter.range_only_tulip import WaymoRangeOnlyTULIP, required_padded_width
 
 def parse_args():
@@ -44,6 +45,8 @@ def main():
     count = min(args.max_frames, len(dataset))
     model = build_model(args.tulip_root).to(args.device)
     checkpoint = torch.load(args.checkpoint, map_location=args.device)
+    range_scale = validate_range_scale(
+        checkpoint.get("args", {}).get("range_scale", 1.0))
     model.load_state_dict(checkpoint["model"])
     model.eval()
     args.output_root.mkdir(parents=True, exist_ok=True)
@@ -56,7 +59,12 @@ def main():
             input_range, target, target_mask, generated_mask = \
                 prepare_range_batch(batch, args.device)
             input_mask = batch["input_mask"].to(args.device).bool()
-            prediction, _ = model(input_range, target, target_mask)
+            normalized_input, normalized_target = normalize_ranges(
+                input_range, target, range_scale)
+            normalized_prediction, _ = model(
+                normalized_input, normalized_target, target_mask)
+            prediction = restore_range_meters(
+                normalized_prediction, range_scale)
             nearest = interpolate_32_to_64(input_range, input_mask, mode="nearest")
             linear = interpolate_32_to_64(input_range, input_mask, mode="linear")
             tm = masked_metrics(prediction, target, target_mask, generated_mask)
@@ -87,6 +95,7 @@ def main():
     linear_mean = mean("linear_generated_l1_m")
     summary = {"checkpoint": str(args.checkpoint),
         "checkpoint_epoch": int(checkpoint["epoch"]),
+        "range_scale_m": range_scale,
         "dataset_role": args.dataset_role, "evaluated_frames": len(rows),
         "model_training": model.training,
         "mean_tulip_generated_l1_m": mean("tulip_generated_l1_m"),

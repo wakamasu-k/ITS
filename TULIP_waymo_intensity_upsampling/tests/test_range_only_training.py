@@ -5,7 +5,8 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tulip_adapter.range_only_training import (
-    RangeLosses, compute_losses, prepare_range_batch, select_training_loss)
+    RangeLosses, compute_losses, normalize_ranges, prepare_range_batch,
+    restore_range_meters, select_training_loss, validate_range_scale)
 
 
 class RangeOnlyTrainingTest(unittest.TestCase):
@@ -40,6 +41,21 @@ class RangeOnlyTrainingTest(unittest.TestCase):
         self.assertEqual(float(select_training_loss(losses, "generated")), 2.0)
         with self.assertRaisesRegex(ValueError, "unsupported"):
             select_training_loss(losses, "bad")
+
+    def test_normalizes_and_restores_meter_ranges(self):
+        input_range = torch.tensor([[[[60.0]]]])
+        target_range = torch.tensor([[[[120.0]]]])
+        normalized_input, normalized_target = normalize_ranges(
+            input_range, target_range, 120.0)
+        self.assertEqual(float(normalized_input.item()), 0.5)
+        self.assertEqual(float(normalized_target.item()), 1.0)
+        restored = restore_range_meters(normalized_input, 120.0)
+        self.assertEqual(float(restored.item()), 60.0)
+
+    def test_rejects_invalid_range_scale(self):
+        for value in (0, -1, float("inf"), float("nan")):
+            with self.assertRaisesRegex(ValueError, "range_scale"):
+                validate_range_scale(value)
 
 
 if __name__ == "__main__":

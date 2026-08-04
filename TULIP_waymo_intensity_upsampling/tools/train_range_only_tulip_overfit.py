@@ -15,7 +15,8 @@ from tulip_adapter import Waymo32To64Dataset
 from tulip_adapter.range_only_tulip import (
     WaymoRangeOnlyTULIP, required_padded_width)
 from tulip_adapter.range_only_training import (
-    compute_losses, prepare_range_batch, select_training_loss)
+    compute_losses, normalize_ranges, prepare_range_batch,
+    select_training_loss, validate_range_scale)
 
 
 def parse_args():
@@ -30,6 +31,8 @@ def parse_args():
     p.add_argument("--weight-decay", type=float, default=0.05)
     p.add_argument("--loss-scope", choices=("all_valid", "generated"),
                    default="all_valid")
+    p.add_argument("--range-scale", type=float, default=1.0,
+                   help="divide meter-valued ranges by this value")
     p.add_argument("--device", default="cuda")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--resume", action="store_true")
@@ -64,6 +67,7 @@ def main():
     args = parse_args()
     if args.max_train_samples < 1 or args.epochs < 1 or args.batch_size < 1:
         raise ValueError("sample, epoch and batch counts must be positive")
+    range_scale = validate_range_scale(args.range_scale)
     torch.manual_seed(args.seed)
     dataset = Waymo32To64Dataset(
         args.index, dataset_role="train", signal_mode="range_only")
@@ -79,6 +83,11 @@ def main():
         if not args.output.is_file():
             raise FileNotFoundError(args.output)
         checkpoint = torch.load(args.output, map_location=args.device)
+        saved_scale = float(checkpoint.get("args", {}).get("range_scale", 1.0))
+        if saved_scale != range_scale:
+            raise ValueError(
+                f"checkpoint range_scale={saved_scale} differs from "
+                f"requested range_scale={range_scale}")
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
         start_epoch = int(checkpoint["epoch"]) + 1
@@ -86,6 +95,7 @@ def main():
     print(json.dumps({
         "samples": count, "epochs": args.epochs, "start_epoch": start_epoch,
         "batch_size": args.batch_size, "loss_scope": args.loss_scope,
+        "range_scale": range_scale,
         "device": args.device, "checkpoint": str(args.output),
     }), flush=True)
     for epoch in range(start_epoch, args.epochs):
@@ -95,6 +105,8 @@ def main():
         for batch in loader:
             input_range, target_range, target_mask, generated_mask = (
                 prepare_range_batch(batch, args.device))
+            input_range, target_range = normalize_ranges(
+                input_range, target_range, range_scale)
             optimizer.zero_grad(set_to_none=True)
             prediction, _ = model(input_range, target_range, target_mask)
             losses = compute_losses(
@@ -107,8 +119,11 @@ def main():
             generated_total += float(losses.generated.detach())
             steps += 1
         metrics = {
-            "epoch": epoch, "all_valid_l1": all_total / steps,
-            "generated_l1": generated_total / steps,
+            "epoch": epoch,
+            "all_valid_l1_normalized": all_total / steps,
+            "generated_l1_normalized": generated_total / steps,
+            "all_valid_l1_m": all_total / steps * range_scale,
+            "generated_l1_m": generated_total / steps * range_scale,
         }
         print(json.dumps(metrics), flush=True)
         save_checkpoint(args.output, {

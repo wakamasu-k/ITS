@@ -10,6 +10,25 @@ class RangeLosses:
     generated: torch.Tensor
 
 
+def validate_range_scale(range_scale: float) -> float:
+    scale = float(range_scale)
+    if not torch.isfinite(torch.tensor(scale)) or scale <= 0:
+        raise ValueError("range_scale must be finite and positive")
+    return scale
+
+
+def normalize_ranges(input_range: torch.Tensor, target_range: torch.Tensor,
+                     range_scale: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """Convert meter-valued tensors to the normalized TULIP domain."""
+    scale = validate_range_scale(range_scale)
+    return input_range / scale, target_range / scale
+
+
+def restore_range_meters(prediction: torch.Tensor,
+                         range_scale: float) -> torch.Tensor:
+    return prediction * validate_range_scale(range_scale)
+
+
 def masked_l1(prediction: torch.Tensor, target: torch.Tensor,
               mask: torch.Tensor) -> torch.Tensor:
     if prediction.shape != target.shape:
