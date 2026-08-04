@@ -22,9 +22,10 @@ intensityは入力・教師に使用せず、後続の提案手法Bと分離す�
 最終headだけを縦2倍・横4倍へ変更する。これは、32→64の垂直2倍と、1×4 patchで
 圧縮した水平幅の復元を両立するために必要である。
 
-Waymo幅2650はpatch width 4と3段のpatch mergingに必要な32の倍数ではないため、
-右端を6列だけ0 paddingして2656とし、forward後に2650へcropする。lossはcrop後の
-GT有効画素だけで計算するのでpadding列は学習へ影響しない。
+Waymo幅2650は、patch width 4、3段のpatch merging、横window width 8を合わせた
+256の倍数ではない。このため入力を水平循環paddingで2816へ拡張し、forward後に
+2650へcropする。教師の追加列は0とし、lossはcrop後のGT有効画素だけで計算するため、
+padding列はlossへ入らない。
 
 ## Dataset
 

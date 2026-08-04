@@ -7,22 +7,30 @@ from einops import rearrange
 
 
 def required_padded_width(width: int, patch_width: int = 4,
-                          merge_levels: int = 3) -> int:
-    if width < 1 or patch_width < 1 or merge_levels < 0:
-        raise ValueError("width and patch_width must be positive")
-    multiple = patch_width * (2 ** merge_levels)
+                          merge_levels: int = 3,
+                          window_width: int = 8) -> int:
+    if (width < 1 or patch_width < 1 or merge_levels < 0
+            or window_width < 1):
+        raise ValueError("width, patch_width and window_width must be positive")
+    # Every encoder stage partitions its token map into width-sized windows.
+    # Before the deepest stage, patch merging halves the width merge_levels
+    # times, so the input width must include this additional factor.
+    multiple = patch_width * (2 ** merge_levels) * window_width
     return ((width + multiple - 1) // multiple) * multiple
 
 
-def pad_width(tensor: torch.Tensor, padded_width: int) -> torch.Tensor:
-    if tensor.ndim < 2:
-        raise ValueError("tensor must have a width dimension")
+def pad_width(tensor: torch.Tensor, padded_width: int, *,
+              circular: bool = False) -> torch.Tensor:
+    if tensor.ndim != 4:
+        raise ValueError("tensor must be [B,C,H,W]")
     width = tensor.shape[-1]
     if padded_width < width:
         raise ValueError("padded_width cannot be smaller than tensor width")
     if padded_width == width:
         return tensor
-    return torch.nn.functional.pad(tensor, (0, padded_width - width))
+    mode = "circular" if circular else "constant"
+    return torch.nn.functional.pad(
+        tensor, (0, padded_width - width, 0, 0), mode=mode)
 
 
 class AnisotropicFinalPatchExpanding(nn.Module):
@@ -97,7 +105,8 @@ class WaymoRangeOnlyTULIP(nn.Module):
             raise ValueError(
                 f"target must be [B,1,64,{self.native_width}], "
                 f"got {tuple(target_range.shape)}")
-        padded_input = pad_width(input_range, self.padded_width)
+        padded_input = pad_width(
+            input_range, self.padded_width, circular=True)
         padded_target = pad_width(target_range, self.padded_width)
         prediction = self.backbone(
             padded_input, padded_target, mc_drop=True)
