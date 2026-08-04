@@ -46,7 +46,8 @@ def transform_intensity(values: np.ndarray, mode: str,
         return np.log1p(result).astype(np.float32)
     raise ValueError(f"unsupported intensity_transform: {mode}")
 
-def load_pair(path: Path, intensity_transform: str) -> dict[str, np.ndarray]:
+def load_pair(path: Path, intensity_transform: str,
+              signal_mode: str = "range_intensity") -> dict[str, np.ndarray]:
     with np.load(path, allow_pickle=False) as data:
         required = {
             "input_32", "input_valid_mask_32", "target_64",
@@ -74,10 +75,16 @@ def load_pair(path: Path, intensity_transform: str) -> dict[str, np.ndarray]:
         raise ValueError("observed target rows mismatch")
     if not np.array_equal(generated, np.arange(1, 64, 2)):
         raise ValueError("generated target rows mismatch")
-    input_32[..., 1] = transform_intensity(
-        input_32[..., 1], intensity_transform, input_mask)
-    target_64[..., 1] = transform_intensity(
-        target_64[..., 1], intensity_transform, target_mask)
+    if signal_mode == "range_intensity":
+        input_32[..., 1] = transform_intensity(
+            input_32[..., 1], intensity_transform, input_mask)
+        target_64[..., 1] = transform_intensity(
+            target_64[..., 1], intensity_transform, target_mask)
+    elif signal_mode == "range_only":
+        input_32 = input_32[..., :1]
+        target_64 = target_64[..., :1]
+    else:
+        raise ValueError(f"unsupported signal_mode: {signal_mode}")
     generated_mask = np.zeros_like(target_mask)
     generated_mask[generated] = target_mask[generated]
     return {
@@ -90,16 +97,19 @@ def load_pair(path: Path, intensity_transform: str) -> dict[str, np.ndarray]:
 
 class Waymo32To64Dataset(Dataset):
     def __init__(self, index_csv: Path, *, dataset_role: str,
-                 intensity_transform: str = "raw") -> None:
+                 intensity_transform: str = "raw",
+                 signal_mode: str = "range_intensity") -> None:
         self.rows = load_index(Path(index_csv), dataset_role)
         self.intensity_transform = intensity_transform
+        self.signal_mode = signal_mode
 
     def __len__(self) -> int:
         return len(self.rows)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         row = self.rows[index]
-        pair = load_pair(Path(row["pair_npz"]), self.intensity_transform)
+        pair = load_pair(
+            Path(row["pair_npz"]), self.intensity_transform, self.signal_mode)
         return {
             "input": torch.from_numpy(pair["input"]),
             "target": torch.from_numpy(pair["target"]),

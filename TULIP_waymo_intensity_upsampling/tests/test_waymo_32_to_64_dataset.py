@@ -61,6 +61,14 @@ class Waymo32To64DatasetTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "no rows"):
             Waymo32To64Dataset(self.index, dataset_role="train")
 
+    def test_range_only_returns_one_channel(self):
+        dataset = Waymo32To64Dataset(
+            self.index, dataset_role="localization_evaluation",
+            signal_mode="range_only")
+        sample = dataset[0]
+        self.assertEqual(tuple(sample["input"].shape), (1, 32, 5))
+        self.assertEqual(tuple(sample["target"].shape), (1, 64, 5))
+
     def test_log1p_transforms_only_intensity_channel(self):
         pair = load_pair(self.pair, "log1p")
         np.testing.assert_allclose(pair["input"][0], 2)

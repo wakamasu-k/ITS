@@ -240,6 +240,18 @@ bash scripts/70_build_training_32_to_64_pairs.sh --resume
 train/validation/testを入力indexからそのまま継承します。詳細は
 [`docs/training_pair_build.md`](docs/training_pair_build.md) を参照してください。
 
+### 12. ベースラインAのrange-only forward
+
+```bash
+source /home/wakamatsu/ITS/.venv_tulip/bin/activate
+bash scripts/75_check_range_only_tulip_forward.sh \
+  --dataset-role train \
+  --device cuda
+```
+
+32→64に必要な異方的headとWaymo幅paddingの詳細は
+[`docs/range_only_baseline.md`](docs/range_only_baseline.md) を参照してください。
+
 ## 次に実装するもの
 
 1. 64/32/16の固定スケール可視化
