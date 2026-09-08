@@ -26,8 +26,9 @@ from tulip_adapter.waymo_16_to_32_dataset import Waymo16To32Dataset
 from tulip_adapter.waymo_16_to_32_tulip import build_waymo_16_to_32_model
 
 
-SCRIPT_VERSION = "1.0.1"
+SCRIPT_VERSION = "1.1.0"
 PROFILES = ("baseline", "moderate")
+INTENSITY_LOSSES = ("l1", "huber")
 MODERATE_INTENSITY_BANDS = (
     (0.0, 2.0, 1.0),
     (2.0, 20.0, 1.2),
@@ -51,6 +52,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--weight-decay", type=float, default=0.01)
     parser.add_argument("--range-weight", type=float, default=1.0)
     parser.add_argument("--intensity-weight", type=float, default=1.0)
+    parser.add_argument("--intensity-loss", choices=INTENSITY_LOSSES, default="l1")
+    parser.add_argument("--huber-delta", type=float, default=0.2)
     parser.add_argument("--range-scale-m", type=float, default=75.0)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--grad-clip", type=float, default=1.0)
@@ -131,6 +134,33 @@ def build_intensity_weights(
     return weights
 
 
+def pointwise_intensity_objective(
+    absolute_error: torch.Tensor,
+    *,
+    loss_name: str,
+    huber_delta: float,
+) -> torch.Tensor:
+    """Return the pointwise log-domain intensity training objective.
+
+    Input/output shape: arbitrary matching tensor shape. ``huber`` uses the
+    standard Huber definition, whose gradient is capped at ``huber_delta``.
+    """
+    if huber_delta <= 0:
+        raise ValueError("huber_delta must be positive")
+    if torch.any(absolute_error < 0) or not torch.isfinite(absolute_error).all():
+        raise ValueError("absolute_error must be finite and non-negative")
+    if loss_name == "l1":
+        return absolute_error
+    if loss_name == "huber":
+        delta = absolute_error.new_tensor(huber_delta)
+        return torch.where(
+            absolute_error <= delta,
+            0.5 * absolute_error.square(),
+            delta * (absolute_error - 0.5 * delta),
+        )
+    raise ValueError(f"unsupported intensity loss: {loss_name}")
+
+
 def controlled_generated_loss(
     prediction: torch.Tensor,
     target: torch.Tensor,
@@ -140,6 +170,8 @@ def controlled_generated_loss(
     profile: str,
     range_weight: float,
     intensity_weight: float,
+    intensity_loss: str = "l1",
+    huber_delta: float = 0.2,
 ) -> dict[str, torch.Tensor]:
     """Compute a generated-row two-channel loss in the model domain.
 
@@ -168,11 +200,18 @@ def controlled_generated_loss(
     range_loss = ((prediction[:, 0] - target[:, 0]).abs() * mask_f).sum() / count
     intensity_error = (prediction[:, 1] - target[:, 1]).abs()
     unweighted_intensity_loss = (intensity_error * mask_f).sum() / count
+    pointwise_objective = pointwise_intensity_objective(
+        intensity_error,
+        loss_name=intensity_loss,
+        huber_delta=huber_delta,
+    )
     intensity_weights = build_intensity_weights(target[:, 1], mask, profile=profile)
     weighted_count = intensity_weights.sum()
     if weighted_count.item() <= 0:
         raise ValueError("weighted valid mask contains no pixels")
-    weighted_intensity_loss = (intensity_error * intensity_weights).sum() / weighted_count
+    weighted_intensity_loss = (
+        pointwise_objective * intensity_weights
+    ).sum() / weighted_count
     total = (
         range_weight * range_loss + intensity_weight * weighted_intensity_loss
     ) / (range_weight + intensity_weight)
@@ -184,6 +223,7 @@ def controlled_generated_loss(
         "range": range_loss,
         "intensity_unweighted_log1p": unweighted_intensity_loss,
         "intensity_weighted_log1p": weighted_intensity_loss,
+        "intensity_objective": weighted_intensity_loss,
         "weighted_pixel_fraction": weighted_fraction,
         "valid_generated_pixels": count.to(dtype=prediction.dtype),
     }
@@ -212,8 +252,15 @@ def _validate_args(args: argparse.Namespace) -> None:
     """Reject invalid or unsafe controlled-training arguments."""
     if args.max_train_samples < 1 or args.epochs < 1 or args.batch_size < 1:
         raise ValueError("sample, epoch, and batch-size values must be positive")
-    if args.lr <= 0 or args.range_scale_m <= 0 or args.grad_clip <= 0:
-        raise ValueError("lr, range-scale-m, and grad-clip must be positive")
+    if (
+        args.lr <= 0
+        or args.range_scale_m <= 0
+        or args.grad_clip <= 0
+        or args.huber_delta <= 0
+    ):
+        raise ValueError(
+            "lr, range-scale-m, grad-clip, and huber-delta must be positive"
+        )
     if args.weight_decay < 0:
         raise ValueError("weight-decay must be non-negative")
     if args.range_weight <= 0 or args.intensity_weight <= 0:
@@ -263,6 +310,8 @@ def main() -> None:
         "intensity_transform": "log1p",
         "intensity_band_domain": "raw_target_intensity",
         "intensity_error_domain": "log1p",
+        "intensity_loss": args.intensity_loss,
+        "huber_delta": args.huber_delta if args.intensity_loss == "huber" else None,
         "intensity_bands": [
             {
                 "lower_inclusive": lower,
@@ -324,6 +373,8 @@ def main() -> None:
                 profile=args.profile,
                 range_weight=args.range_weight,
                 intensity_weight=args.intensity_weight,
+                intensity_loss=args.intensity_loss,
+                huber_delta=args.huber_delta,
             )
             loss = losses["total"]
             if not torch.isfinite(loss):

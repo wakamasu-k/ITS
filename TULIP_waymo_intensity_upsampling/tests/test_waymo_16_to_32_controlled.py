@@ -15,6 +15,7 @@ from tools.evaluate_waymo_16_to_32_controlled import (
 from tools.train_waymo_16_to_32_log1p_moderate_tail import (
     build_intensity_weights,
     controlled_generated_loss,
+    pointwise_intensity_objective,
     set_reproducible_seed,
 )
 
@@ -111,6 +112,44 @@ def test_empty_generated_mask_is_rejected() -> None:
             range_weight=1.0,
             intensity_weight=1.0,
         )
+
+
+def test_huber_objective_caps_large_log_error_gradient() -> None:
+    """Use standard Huber values without dropping any high-error element."""
+    error = torch.tensor([0.0, 0.1, 0.2, 1.0], requires_grad=True)
+    result = pointwise_intensity_objective(
+        error,
+        loss_name="huber",
+        huber_delta=0.2,
+    )
+    expected = torch.tensor([0.0, 0.005, 0.02, 0.18])
+    assert torch.allclose(result, expected)
+    result.sum().backward()
+    assert torch.allclose(error.grad, torch.tensor([0.0, 0.1, 0.2, 0.2]))
+
+
+def test_huber_loss_keeps_high_intensity_target_in_mask() -> None:
+    """Retain a high-reflectivity target while robustifying its log error."""
+    target = torch.zeros((1, 2, 2, 1), dtype=torch.float32)
+    prediction = torch.zeros_like(target)
+    target[:, 1, 1, 0] = torch.log1p(torch.tensor(100000.0))
+    valid = torch.ones((1, 2, 1), dtype=torch.bool)
+    generated = torch.tensor([[[False], [True]]])
+    result = controlled_generated_loss(
+        prediction,
+        target,
+        valid,
+        generated,
+        profile="baseline",
+        range_weight=1.0,
+        intensity_weight=1.0,
+        intensity_loss="huber",
+        huber_delta=0.2,
+    )
+    assert result["valid_generated_pixels"].item() == 1
+    assert result["intensity_unweighted_log1p"].item() > 10.0
+    assert result["intensity_objective"].item() > 0.0
+    assert result["intensity_objective"].item() < 3.0
 
 
 def test_generated_only_mask_keeps_odd_rows() -> None:
