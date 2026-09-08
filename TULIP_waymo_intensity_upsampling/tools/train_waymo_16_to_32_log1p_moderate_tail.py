@@ -1,0 +1,377 @@
+#!/usr/bin/env python3
+"""Train reproducible Waymo 16-to-32 TULIP intensity experiments.
+
+The existing two-channel Waymo TULIP adapter is reused unchanged. Only the
+loss contract is controlled: valid generated odd rows, 75 m range scaling,
+log1p intensity, and optional bounded target-dependent intensity weights.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+import sys
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+from torch.utils.data import DataLoader, Subset
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from tulip_adapter.waymo_16_to_32_dataset import Waymo16To32Dataset
+from tulip_adapter.waymo_16_to_32_tulip import build_waymo_16_to_32_model
+
+
+SCRIPT_VERSION = "1.0.1"
+PROFILES = ("baseline", "moderate")
+MODERATE_INTENSITY_BANDS = (
+    (0.0, 2.0, 1.0),
+    (2.0, 20.0, 1.2),
+    (20.0, 100.0, 1.5),
+    (100.0, 1000.0, 2.0),
+    (1000.0, float("inf"), 2.0),
+)
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse controlled training arguments."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--index", required=True, type=Path)
+    parser.add_argument("--tulip-root", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--profile", choices=PROFILES, required=True)
+    parser.add_argument("--max-train-samples", type=int, default=160)
+    parser.add_argument("--epochs", type=int, default=300)
+    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--lr", type=float, default=5e-4)
+    parser.add_argument("--weight-decay", type=float, default=0.01)
+    parser.add_argument("--range-weight", type=float, default=1.0)
+    parser.add_argument("--intensity-weight", type=float, default=1.0)
+    parser.add_argument("--range-scale-m", type=float, default=75.0)
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--grad-clip", type=float, default=1.0)
+    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--overwrite", action="store_true")
+    return parser.parse_args()
+
+
+def set_reproducible_seed(seed: int) -> None:
+    """Seed Python, NumPy, and PyTorch and request deterministic kernels.
+
+    Input shape: scalar integer seed.
+    Output shape: none; global RNG and backend state are updated.
+    """
+    if seed < 0:
+        raise ValueError("seed must be non-negative")
+    # Required by deterministic CuBLAS matrix multiplication on CUDA >= 10.2.
+    # Set this before any CUDA RNG or model operation initializes the context.
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    try:
+        torch.use_deterministic_algorithms(True, warn_only=True)
+    except TypeError:
+        torch.use_deterministic_algorithms(True)
+
+
+def intensity_band_spec(profile: str) -> tuple[tuple[float, float, float], ...]:
+    """Return raw-intensity band weights for one experiment profile.
+
+    Input shape: profile string.
+    Output shape: tuple of ``(lower, upper, weight)`` scalar triples.
+    """
+    if profile == "baseline":
+        return ((0.0, float("inf"), 1.0),)
+    if profile == "moderate":
+        return MODERATE_INTENSITY_BANDS
+    raise ValueError(f"unsupported profile: {profile}")
+
+
+def build_intensity_weights(
+    target_log1p: torch.Tensor,
+    valid_generated_mask: torch.Tensor,
+    *,
+    profile: str,
+) -> torch.Tensor:
+    """Build bounded weights using raw target intensity bands.
+
+    Input shapes: target and mask are ``[B,H,W]`` in log1p and bool domains.
+    Output shape: floating-point weights ``[B,H,W]``; invalid pixels are zero.
+    """
+    if target_log1p.ndim != 3:
+        raise ValueError("target_log1p must be [B,H,W]")
+    if tuple(valid_generated_mask.shape) != tuple(target_log1p.shape):
+        raise ValueError("target_log1p and mask shapes differ")
+    if not torch.isfinite(target_log1p).all():
+        raise ValueError("target_log1p must be finite")
+    mask = valid_generated_mask.to(dtype=torch.bool)
+    raw_target = torch.expm1(target_log1p)
+    if torch.any(raw_target[mask] < -1e-6):
+        raise ValueError("valid log1p target decodes to negative intensity")
+    weights = torch.zeros_like(target_log1p)
+    for lower, upper, weight in intensity_band_spec(profile):
+        lower_log1p = torch.log1p(target_log1p.new_tensor(lower))
+        selected = mask & (target_log1p >= lower_log1p)
+        if np.isfinite(upper):
+            upper_log1p = torch.log1p(target_log1p.new_tensor(upper))
+            selected &= target_log1p < upper_log1p
+        weights[selected] = weight
+    if mask.any() and torch.any(weights[mask] <= 0):
+        raise RuntimeError("intensity bands did not cover every valid target")
+    return weights
+
+
+def controlled_generated_loss(
+    prediction: torch.Tensor,
+    target: torch.Tensor,
+    target_mask: torch.Tensor,
+    generated_mask: torch.Tensor,
+    *,
+    profile: str,
+    range_weight: float,
+    intensity_weight: float,
+) -> dict[str, torch.Tensor]:
+    """Compute a generated-row two-channel loss in the model domain.
+
+    Input shapes: prediction/target ``[B,2,32,W]`` and masks ``[B,32,W]``.
+    Output shape: dictionary of scalar tensors, including ``total``.
+    """
+    if prediction.shape != target.shape:
+        raise ValueError("prediction and target shapes differ")
+    if prediction.ndim != 4 or prediction.shape[1] != 2:
+        raise ValueError("prediction and target must be [B,2,H,W]")
+    expected_mask = prediction.shape[:1] + prediction.shape[2:]
+    if tuple(target_mask.shape) != expected_mask:
+        raise ValueError("target_mask must be [B,H,W]")
+    if tuple(generated_mask.shape) != expected_mask:
+        raise ValueError("generated_mask must be [B,H,W]")
+    if range_weight <= 0 or intensity_weight <= 0:
+        raise ValueError("channel weights must be positive")
+    if not torch.isfinite(prediction).all() or not torch.isfinite(target).all():
+        raise ValueError("prediction and target must be finite")
+
+    mask = target_mask.to(dtype=torch.bool) & generated_mask.to(dtype=torch.bool)
+    count = mask.sum()
+    if count.item() == 0:
+        raise ValueError("valid generated mask contains no pixels")
+    mask_f = mask.to(dtype=prediction.dtype)
+    range_loss = ((prediction[:, 0] - target[:, 0]).abs() * mask_f).sum() / count
+    intensity_error = (prediction[:, 1] - target[:, 1]).abs()
+    unweighted_intensity_loss = (intensity_error * mask_f).sum() / count
+    intensity_weights = build_intensity_weights(target[:, 1], mask, profile=profile)
+    weighted_count = intensity_weights.sum()
+    if weighted_count.item() <= 0:
+        raise ValueError("weighted valid mask contains no pixels")
+    weighted_intensity_loss = (intensity_error * intensity_weights).sum() / weighted_count
+    total = (
+        range_weight * range_loss + intensity_weight * weighted_intensity_loss
+    ) / (range_weight + intensity_weight)
+    weighted_fraction = (intensity_weights[mask] > 1.0).to(
+        dtype=prediction.dtype
+    ).mean()
+    return {
+        "total": total,
+        "range": range_loss,
+        "intensity_unweighted_log1p": unweighted_intensity_loss,
+        "intensity_weighted_log1p": weighted_intensity_loss,
+        "weighted_pixel_fraction": weighted_fraction,
+        "valid_generated_pixels": count.to(dtype=prediction.dtype),
+    }
+
+
+def _jsonable_args(args: argparse.Namespace) -> dict[str, Any]:
+    """Convert CLI arguments to JSON-safe checkpoint metadata."""
+    return {
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in vars(args).items()
+    }
+
+
+def save_checkpoint(path: Path, value: dict[str, Any]) -> None:
+    """Save a checkpoint through a temporary file and atomic rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        torch.save(value, temporary)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _validate_args(args: argparse.Namespace) -> None:
+    """Reject invalid or unsafe controlled-training arguments."""
+    if args.max_train_samples < 1 or args.epochs < 1 or args.batch_size < 1:
+        raise ValueError("sample, epoch, and batch-size values must be positive")
+    if args.lr <= 0 or args.range_scale_m <= 0 or args.grad_clip <= 0:
+        raise ValueError("lr, range-scale-m, and grad-clip must be positive")
+    if args.weight_decay < 0:
+        raise ValueError("weight-decay must be non-negative")
+    if args.range_weight <= 0 or args.intensity_weight <= 0:
+        raise ValueError("range and intensity weights must be positive")
+    if args.seed < 0:
+        raise ValueError("seed must be non-negative")
+    if args.output.exists() and not args.overwrite:
+        raise FileExistsError(
+            f"output already exists: {args.output}; pass --overwrite explicitly"
+        )
+
+
+def main() -> None:
+    """Train one controlled baseline or moderate-tail experiment."""
+    args = parse_args()
+    _validate_args(args)
+    set_reproducible_seed(args.seed)
+    device = torch.device(args.device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA requested but torch.cuda.is_available() is false")
+
+    dataset = Waymo16To32Dataset(
+        args.index,
+        dataset_role="train",
+        intensity_transform="log1p",
+        range_scale_m=args.range_scale_m,
+    )
+    count = min(args.max_train_samples, len(dataset))
+    if count < 1:
+        raise ValueError("no training samples")
+    loader = DataLoader(
+        Subset(dataset, range(count)),
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=0,
+    )
+    model = build_waymo_16_to_32_model(args.tulip_root).to(device)
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+    )
+    epoch_metrics: list[dict[str, float]] = []
+    contract = {
+        "script_version": SCRIPT_VERSION,
+        "profile": args.profile,
+        "loss_rows": "valid_generated_odd_rows_only",
+        "range_scale_m": args.range_scale_m,
+        "intensity_transform": "log1p",
+        "intensity_band_domain": "raw_target_intensity",
+        "intensity_error_domain": "log1p",
+        "intensity_bands": [
+            {
+                "lower_inclusive": lower,
+                "upper_exclusive": None if not np.isfinite(upper) else upper,
+                "weight": weight,
+            }
+            for lower, upper, weight in intensity_band_spec(args.profile)
+        ],
+        "range_weight": args.range_weight,
+        "intensity_weight": args.intensity_weight,
+        "optimizer": "AdamW",
+        "learning_rate": args.lr,
+        "weight_decay": args.weight_decay,
+        "scheduler": None,
+        "warmup": None,
+        "amp": False,
+        "gradient_clip_norm": args.grad_clip,
+        "seed": args.seed,
+        "shuffle": False,
+        "num_workers": 0,
+    }
+    print(
+        json.dumps(
+            {
+                "device": str(device),
+                "samples": count,
+                "epochs": args.epochs,
+                "batch_size": args.batch_size,
+                "checkpoint": str(args.output),
+                "contract": contract,
+            },
+            ensure_ascii=False,
+        ),
+        flush=True,
+    )
+
+    for epoch in range(args.epochs):
+        model.train()
+        totals = {
+            "loss": 0.0,
+            "range": 0.0,
+            "intensity_unweighted_log1p": 0.0,
+            "intensity_weighted_log1p": 0.0,
+            "weighted_pixel_fraction": 0.0,
+        }
+        steps = 0
+        for batch in loader:
+            input_signal = batch["input"].to(device)
+            target_signal = batch["target"].to(device)
+            target_mask = batch["target_mask"].to(device)
+            generated_mask = batch["generated_mask"].to(device)
+            optimizer.zero_grad(set_to_none=True)
+            prediction, _ = model(input_signal, target_signal, target_mask)
+            losses = controlled_generated_loss(
+                prediction,
+                target_signal,
+                target_mask,
+                generated_mask,
+                profile=args.profile,
+                range_weight=args.range_weight,
+                intensity_weight=args.intensity_weight,
+            )
+            loss = losses["total"]
+            if not torch.isfinite(loss):
+                raise RuntimeError(f"non-finite loss at epoch {epoch}")
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            optimizer.step()
+            totals["loss"] += float(loss.detach())
+            for name in totals:
+                if name != "loss":
+                    totals[name] += float(losses[name].detach())
+            steps += 1
+        if steps == 0:
+            raise RuntimeError("training DataLoader produced no batches")
+        metrics = {name: value / steps for name, value in totals.items()}
+        epoch_metrics.append(metrics)
+        print(json.dumps({"epoch": epoch, **metrics}), flush=True)
+
+    save_checkpoint(
+        args.output,
+        {
+            "task": "Waymo TOP LiDAR 16-to-32 controlled two-channel TULIP",
+            "format_version": 1,
+            "script_version": SCRIPT_VERSION,
+            "epoch": args.epochs - 1,
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "args": _jsonable_args(args),
+            "training_contract": contract,
+            "epoch_metrics": epoch_metrics,
+            "torch_version": torch.__version__,
+        },
+    )
+    print(
+        json.dumps(
+            {
+                "checkpoint_saved": str(args.output),
+                "profile": args.profile,
+                "initial_loss": epoch_metrics[0]["loss"],
+                "final_loss": epoch_metrics[-1]["loss"],
+                "decreased": epoch_metrics[-1]["loss"] < epoch_metrics[0]["loss"],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        flush=True,
+    )
+
+
+if __name__ == "__main__":
+    main()
