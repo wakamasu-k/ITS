@@ -398,6 +398,12 @@ def main() -> None:
         help="距離の色段階数。40なら0-80mを約2m刻み。256で連続色。",
     )
     parser.add_argument(
+        "--depth_color_direction",
+        choices=("near_red", "far_red"),
+        default="near_red",
+        help="距離色の向き。near_redは近距離を赤、far_redは遠距離を赤にする。",
+    )
+    parser.add_argument(
         "--intensity_mode",
         choices=("fixed", "percentile", "equalized"),
         default="equalized",
@@ -480,8 +486,9 @@ def main() -> None:
 
     # 反射強度: 低い=青紫、高い=赤
     intensity_colors = turbo_colors(intensity_normalized, reverse=False)
-    # Camera Z: 近い=赤、遠い=青紫
-    depth_colors = turbo_colors(depth_normalized, reverse=True)
+    # Camera Zの色方向は比較目的に応じて明示的に選ぶ。
+    depth_reverse = args.depth_color_direction == "near_red"
+    depth_colors = turbo_colors(depth_normalized, reverse=depth_reverse)
 
     intensity_color, intensity_mask = render_points(
         camera_gray.shape,
@@ -542,9 +549,10 @@ def main() -> None:
     depth_legend = make_colorbar(
         height=260,
         width=220,
-        reverse=True,
-        top_label=f"Near ({args.depth_min:g} m)",
-        bottom_label=f"Far ({args.depth_max:g} m)",
+        reverse=depth_reverse,
+        # make_colorbarは上から正規化値1（Far）、下を0（Near）で描く。
+        top_label=f"Far ({args.depth_max:g} m)",
+        bottom_label=f"Near ({args.depth_min:g} m)",
     )
     cv2.imwrite(str(outputs["intensity_legend"]), intensity_legend)
     cv2.imwrite(str(outputs["depth_legend"]), depth_legend)
@@ -571,7 +579,8 @@ def main() -> None:
     print(
         f"depth display      : scale={args.depth_scale}, "
         f"gamma={args.depth_gamma}, bins={args.depth_bins}, "
-        f"range={args.depth_min:g}-{args.depth_max:g} m"
+        f"range={args.depth_min:g}-{args.depth_max:g} m, "
+        f"colors={args.depth_color_direction}"
     )
 
     for key, path in outputs.items():

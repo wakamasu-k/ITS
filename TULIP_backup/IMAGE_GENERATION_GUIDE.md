@@ -210,3 +210,34 @@ GTの7,686画素は以前の描画と一致しており、表示設定変更で�
 - 出力prefix
 
 同じフレーム番号でもsequenceが異なれば別場面なので注意する。
+
+## 13. 遠距離を赤にした37段階版
+
+遠距離側にも赤～橙を十分に使う比較画像を、次の固定条件で生成した。
+
+```text
+表示範囲      : 4～40 m
+正規化        : gamma
+gamma         : 0.50
+色段階        : 37（約1 m刻み）
+色方向        : 近距離=青紫、遠距離=赤
+点の描画半径  : 0 px（1点=1画素）
+```
+
+保存先:
+
+```text
+debug_outputs/one_frame_000000/
+  camera_compare_turbo_far_red_4_40m_gamma050_1m_point0/
+```
+
+実行時は次の距離表示オプションをGT・Low・Predすべてに指定する。
+
+```bash
+--depth_min 4 --depth_max 40 \
+--depth_scale gamma --depth_gamma 0.50 --depth_bins 37 \
+--depth_color_direction far_red --point_size 0
+```
+
+`--depth_color_direction`は`near_red`（従来互換）または`far_red`を選べる。
+距離凡例は上をFar、下をNearとして表示するよう修正済みである。
