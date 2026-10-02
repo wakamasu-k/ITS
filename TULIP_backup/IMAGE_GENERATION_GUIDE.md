@@ -241,3 +241,34 @@ debug_outputs/one_frame_000000/
 
 `--depth_color_direction`は`near_red`（従来互換）または`far_red`を選べる。
 距離凡例は上をFar、下をNearとして表示するよう修正済みである。
+
+## 14. JET / Turboと0～80 m / 0～40 mの比較
+
+点半径を3 px、距離色を近距離=赤・遠距離=青に統一し、次の4条件を比較する。
+
+```text
+JET   : 0～80 m
+Turbo : 0～80 m
+JET   : 0～40 m
+Turbo : 0～40 m
+```
+
+全条件で線形正規化、256段階を使用する。カラーマップは次のオプションで選ぶ。
+
+```bash
+--depth_colormap jet
+--depth_colormap turbo
+```
+
+共通オプション:
+
+```bash
+--depth_scale linear --depth_gamma 1.0 --depth_bins 256 \
+--depth_color_direction near_red --point_size 3
+```
+
+成果物は次へ保存する。
+
+```text
+debug_outputs/one_frame_000000/camera_compare_jet_turbo_ranges_point3/
+```

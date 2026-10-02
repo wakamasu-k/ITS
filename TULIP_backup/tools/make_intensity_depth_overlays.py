@@ -284,11 +284,28 @@ def normalize_depth(
     return normalized.astype(np.float32)
 
 
-def turbo_colors(normalized: np.ndarray, reverse: bool) -> np.ndarray:
-    """0-1値をOpenCV TURBOのBGR色へ変換する。"""
+def colormap_colors(
+    normalized: np.ndarray,
+    reverse: bool,
+    colormap: str,
+) -> np.ndarray:
+    """0-1値を指定したOpenCVカラーマップのBGR色へ変換する。"""
     mapped = 1.0 - normalized if reverse else normalized
     values_u8 = np.rint(np.clip(mapped, 0.0, 1.0) * 255.0).astype(np.uint8)
-    return cv2.applyColorMap(values_u8.reshape(-1, 1), cv2.COLORMAP_TURBO).reshape(-1, 3)
+    colormap_codes = {
+        "turbo": cv2.COLORMAP_TURBO,
+        "jet": cv2.COLORMAP_JET,
+    }
+    if colormap not in colormap_codes:
+        raise ValueError(f"未対応のカラーマップです: {colormap}")
+    return cv2.applyColorMap(
+        values_u8.reshape(-1, 1), colormap_codes[colormap]
+    ).reshape(-1, 3)
+
+
+def turbo_colors(normalized: np.ndarray, reverse: bool) -> np.ndarray:
+    """従来互換用に0-1値をOpenCV TURBOのBGR色へ変換する。"""
+    return colormap_colors(normalized, reverse=reverse, colormap="turbo")
 
 
 def render_points(
@@ -350,6 +367,7 @@ def make_colorbar(
     reverse: bool,
     top_label: str,
     bottom_label: str,
+    colormap: str = "turbo",
 ) -> np.ndarray:
     """簡易的な縦カラーバー画像を作る。"""
     height = max(height, 120)
@@ -358,7 +376,7 @@ def make_colorbar(
 
     canvas = np.full((height, width, 3), 255, dtype=np.uint8)
     y_values = np.linspace(1.0, 0.0, height - 20, dtype=np.float32)
-    colors = turbo_colors(y_values, reverse=reverse)
+    colors = colormap_colors(y_values, reverse=reverse, colormap=colormap)
 
     x0 = 10
     for y, color in enumerate(colors, start=10):
@@ -402,6 +420,12 @@ def main() -> None:
         choices=("near_red", "far_red"),
         default="near_red",
         help="距離色の向き。near_redは近距離を赤、far_redは遠距離を赤にする。",
+    )
+    parser.add_argument(
+        "--depth_colormap",
+        choices=("turbo", "jet"),
+        default="turbo",
+        help="Camera Z距離に使用するOpenCVカラーマップ。",
     )
     parser.add_argument(
         "--intensity_mode",
@@ -488,7 +512,11 @@ def main() -> None:
     intensity_colors = turbo_colors(intensity_normalized, reverse=False)
     # Camera Zの色方向は比較目的に応じて明示的に選ぶ。
     depth_reverse = args.depth_color_direction == "near_red"
-    depth_colors = turbo_colors(depth_normalized, reverse=depth_reverse)
+    depth_colors = colormap_colors(
+        depth_normalized,
+        reverse=depth_reverse,
+        colormap=args.depth_colormap,
+    )
 
     intensity_color, intensity_mask = render_points(
         camera_gray.shape,
@@ -553,6 +581,7 @@ def main() -> None:
         # make_colorbarは上から正規化値1（Far）、下を0（Near）で描く。
         top_label=f"Far ({args.depth_max:g} m)",
         bottom_label=f"Near ({args.depth_min:g} m)",
+        colormap=args.depth_colormap,
     )
     cv2.imwrite(str(outputs["intensity_legend"]), intensity_legend)
     cv2.imwrite(str(outputs["depth_legend"]), depth_legend)
@@ -580,7 +609,7 @@ def main() -> None:
         f"depth display      : scale={args.depth_scale}, "
         f"gamma={args.depth_gamma}, bins={args.depth_bins}, "
         f"range={args.depth_min:g}-{args.depth_max:g} m, "
-        f"colors={args.depth_color_direction}"
+        f"colors={args.depth_color_direction}, colormap={args.depth_colormap}"
     )
 
     for key, path in outputs.items():
