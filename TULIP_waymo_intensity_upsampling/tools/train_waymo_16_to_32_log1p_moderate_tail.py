@@ -26,15 +26,23 @@ from tulip_adapter.waymo_16_to_32_dataset import Waymo16To32Dataset
 from tulip_adapter.waymo_16_to_32_tulip import build_waymo_16_to_32_model
 
 
-SCRIPT_VERSION = "1.1.0"
-PROFILES = ("baseline", "moderate")
+SCRIPT_VERSION = "1.4.0"
+PROFILES = ("baseline", "moderate", "low_0_1", "band_balanced")
 INTENSITY_LOSSES = ("l1", "huber")
+LOW_INTENSITY_MAX_RAW = 1.0
 MODERATE_INTENSITY_BANDS = (
     (0.0, 2.0, 1.0),
     (2.0, 20.0, 1.2),
     (20.0, 100.0, 1.5),
     (100.0, 1000.0, 2.0),
     (1000.0, float("inf"), 2.0),
+)
+BALANCED_INTENSITY_BANDS = (
+    ("0_1", 0.0, 1.0, 0.90),
+    ("1_20", 1.0, 20.0, 0.05),
+    ("20_100", 20.0, 100.0, 0.02),
+    ("100_1000", 100.0, 1000.0, 0.02),
+    ("1000_inf", 1000.0, float("inf"), 0.01),
 )
 
 
@@ -44,6 +52,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--index", required=True, type=Path)
     parser.add_argument("--tulip-root", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--init-checkpoint",
+        type=Path,
+        default=None,
+        help="Load model weights only before fine-tuning; optimizer state is not restored.",
+    )
     parser.add_argument("--profile", choices=PROFILES, required=True)
     parser.add_argument("--max-train-samples", type=int, default=160)
     parser.add_argument("--epochs", type=int, default=300)
@@ -106,10 +120,11 @@ def build_intensity_weights(
     *,
     profile: str,
 ) -> torch.Tensor:
-    """Build bounded weights using raw target intensity bands.
+    """Build weights using the selected raw-target intensity contract.
 
     Input shapes: target and mask are ``[B,H,W]`` in log1p and bool domains.
-    Output shape: floating-point weights ``[B,H,W]``; invalid pixels are zero.
+    Output shape: floating-point weights ``[B,H,W]``. Invalid pixels are zero;
+    ``low_0_1`` also assigns zero to valid targets above raw intensity 1.
     """
     if target_log1p.ndim != 3:
         raise ValueError("target_log1p must be [B,H,W]")
@@ -122,6 +137,10 @@ def build_intensity_weights(
     if torch.any(raw_target[mask] < -1e-6):
         raise ValueError("valid log1p target decodes to negative intensity")
     weights = torch.zeros_like(target_log1p)
+    if profile == "low_0_1":
+        selected = mask & (raw_target <= LOW_INTENSITY_MAX_RAW)
+        weights[selected] = 1.0
+        return weights
     for lower, upper, weight in intensity_band_spec(profile):
         lower_log1p = torch.log1p(target_log1p.new_tensor(lower))
         selected = mask & (target_log1p >= lower_log1p)
@@ -159,6 +178,81 @@ def pointwise_intensity_objective(
             delta * (absolute_error - 0.5 * delta),
         )
     raise ValueError(f"unsupported intensity loss: {loss_name}")
+
+
+def band_balanced_intensity_loss(
+    pointwise_objective: torch.Tensor,
+    target_log1p: torch.Tensor,
+    valid_generated_mask: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    """Combine per-band mean intensity losses with fixed coefficients.
+
+    Input shapes: objective and target are ``[B,H,W]`` floating-point tensors;
+    mask is ``[B,H,W]`` bool-compatible. Output shape: a dictionary of scalar
+    tensors containing the combined loss and per-band loss/count diagnostics.
+    Intervals are ``[0,1]``, ``(1,20]``, ``(20,100]``, ``(100,1000]``, and
+    ``(1000,inf)`` in raw Waymo intensity.
+    """
+    if pointwise_objective.ndim != 3 or target_log1p.ndim != 3:
+        raise ValueError("objective and target_log1p must be [B,H,W]")
+    if pointwise_objective.shape != target_log1p.shape:
+        raise ValueError("objective and target_log1p shapes differ")
+    if valid_generated_mask.shape != target_log1p.shape:
+        raise ValueError("target_log1p and mask shapes differ")
+    if not torch.isfinite(pointwise_objective).all():
+        raise ValueError("pointwise objective must be finite")
+    if torch.any(pointwise_objective < 0):
+        raise ValueError("pointwise objective must be non-negative")
+    if not torch.isfinite(target_log1p).all():
+        raise ValueError("target_log1p must be finite")
+
+    mask = valid_generated_mask.to(dtype=torch.bool)
+    if not mask.any():
+        raise ValueError("band-balanced intensity mask contains no pixels")
+    raw_target = torch.expm1(target_log1p)
+    if torch.any(raw_target[mask] < -1e-6):
+        raise ValueError("valid log1p target decodes to negative intensity")
+
+    zero = pointwise_objective.new_zeros(())
+    weighted_sum = zero
+    active_coefficient_sum = zero
+    covered = torch.zeros_like(mask)
+    metrics: dict[str, torch.Tensor] = {}
+    for label, lower, upper, coefficient in BALANCED_INTENSITY_BANDS:
+        lower_log1p = torch.log1p(target_log1p.new_tensor(lower))
+        if lower == 0.0:
+            selected = mask & (target_log1p >= lower_log1p)
+        else:
+            selected = mask & (target_log1p > lower_log1p)
+        if np.isfinite(upper):
+            upper_log1p = torch.log1p(target_log1p.new_tensor(upper))
+            selected &= target_log1p <= upper_log1p
+        if torch.any(covered & selected):
+            raise RuntimeError(f"overlapping balanced intensity band: {label}")
+        covered |= selected
+        pixel_count = selected.sum()
+        active = pixel_count > 0
+        if active.item():
+            band_loss = pointwise_objective[selected].mean()
+            coefficient_tensor = pointwise_objective.new_tensor(coefficient)
+            weighted_sum = weighted_sum + coefficient_tensor * band_loss
+            active_coefficient_sum = active_coefficient_sum + coefficient_tensor
+        else:
+            band_loss = zero
+        metrics[f"band_{label}_loss_log1p"] = band_loss
+        metrics[f"band_{label}_pixels"] = pixel_count.to(
+            dtype=pointwise_objective.dtype
+        )
+        metrics[f"band_{label}_active"] = active.to(
+            dtype=pointwise_objective.dtype
+        )
+
+    if torch.any(mask & ~covered):
+        raise RuntimeError("balanced intensity bands did not cover every valid target")
+    if active_coefficient_sum.item() <= 0:
+        raise RuntimeError("no balanced intensity band was active")
+    metrics["loss"] = weighted_sum / active_coefficient_sum
+    return metrics
 
 
 def controlled_generated_loss(
@@ -205,28 +299,52 @@ def controlled_generated_loss(
         loss_name=intensity_loss,
         huber_delta=huber_delta,
     )
-    intensity_weights = build_intensity_weights(target[:, 1], mask, profile=profile)
-    weighted_count = intensity_weights.sum()
-    if weighted_count.item() <= 0:
-        raise ValueError("weighted valid mask contains no pixels")
-    weighted_intensity_loss = (
-        pointwise_objective * intensity_weights
-    ).sum() / weighted_count
+    band_metrics: dict[str, torch.Tensor] = {}
+    if profile == "band_balanced":
+        balanced = band_balanced_intensity_loss(
+            pointwise_objective,
+            target[:, 1],
+            mask,
+        )
+        weighted_intensity_loss = balanced.pop("loss")
+        band_metrics = balanced
+        intensity_optimized_count = count
+        raw_target = torch.expm1(target[:, 1])
+        weighted_fraction = ((raw_target > 1.0) & mask).to(
+            dtype=prediction.dtype
+        ).sum() / count
+    else:
+        intensity_weights = build_intensity_weights(target[:, 1], mask, profile=profile)
+        intensity_optimized_mask = intensity_weights > 0
+        intensity_optimized_count = intensity_optimized_mask.sum()
+        weighted_count = intensity_weights.sum()
+        if weighted_count.item() <= 0:
+            raise ValueError("intensity loss scope contains no pixels")
+        weighted_intensity_loss = (
+            pointwise_objective * intensity_weights
+        ).sum() / weighted_count
+        weighted_fraction = (intensity_weights[mask] > 1.0).to(
+            dtype=prediction.dtype
+        ).mean()
     total = (
         range_weight * range_loss + intensity_weight * weighted_intensity_loss
     ) / (range_weight + intensity_weight)
-    weighted_fraction = (intensity_weights[mask] > 1.0).to(
-        dtype=prediction.dtype
-    ).mean()
-    return {
+    optimized_fraction = intensity_optimized_count.to(dtype=prediction.dtype) / count
+    result = {
         "total": total,
         "range": range_loss,
         "intensity_unweighted_log1p": unweighted_intensity_loss,
         "intensity_weighted_log1p": weighted_intensity_loss,
         "intensity_objective": weighted_intensity_loss,
         "weighted_pixel_fraction": weighted_fraction,
+        "intensity_optimized_pixel_fraction": optimized_fraction,
         "valid_generated_pixels": count.to(dtype=prediction.dtype),
+        "intensity_optimized_pixels": intensity_optimized_count.to(
+            dtype=prediction.dtype
+        ),
     }
+    result.update(band_metrics)
+    return result
 
 
 def _jsonable_args(args: argparse.Namespace) -> dict[str, Any]:
@@ -248,6 +366,38 @@ def save_checkpoint(path: Path, value: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def load_model_initialization(
+    model: torch.nn.Module,
+    checkpoint_path: Path | None,
+) -> dict[str, Any] | None:
+    """Strictly initialize a model from a controlled-training checkpoint.
+
+    Input shape: model with an arbitrary parameter tree and an optional scalar
+    checkpoint path. Output shape: optional metadata dictionary. Only the
+    model parameters are restored; optimizer state is intentionally ignored.
+    """
+    if checkpoint_path is None:
+        return None
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"initialization checkpoint not found: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    if not isinstance(checkpoint, dict):
+        raise TypeError("initialization checkpoint must contain a dictionary")
+    state_dict = checkpoint.get("model")
+    if not isinstance(state_dict, dict):
+        raise KeyError("initialization checkpoint does not contain model weights")
+    model.load_state_dict(state_dict, strict=True)
+    contract = checkpoint.get("training_contract")
+    source_profile = contract.get("profile") if isinstance(contract, dict) else None
+    return {
+        "source_checkpoint": str(checkpoint_path),
+        "source_epoch": checkpoint.get("epoch"),
+        "source_profile": source_profile,
+        "model_state_strict": True,
+        "optimizer_restored": False,
+    }
+
+
 def _validate_args(args: argparse.Namespace) -> None:
     """Reject invalid or unsafe controlled-training arguments."""
     if args.max_train_samples < 1 or args.epochs < 1 or args.batch_size < 1:
@@ -267,6 +417,13 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("range and intensity weights must be positive")
     if args.seed < 0:
         raise ValueError("seed must be non-negative")
+    if args.init_checkpoint is not None:
+        if not args.init_checkpoint.is_file():
+            raise FileNotFoundError(
+                f"initialization checkpoint not found: {args.init_checkpoint}"
+            )
+        if args.init_checkpoint.resolve() == args.output.resolve():
+            raise ValueError("init-checkpoint and output must be different files")
     if args.output.exists() and not args.overwrite:
         raise FileExistsError(
             f"output already exists: {args.output}; pass --overwrite explicitly"
@@ -274,7 +431,7 @@ def _validate_args(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    """Train one controlled baseline or moderate-tail experiment."""
+    """Train one controlled intensity experiment without changing TULIP."""
     args = parse_args()
     _validate_args(args)
     set_reproducible_seed(args.seed)
@@ -297,11 +454,38 @@ def main() -> None:
         shuffle=False,
         num_workers=0,
     )
-    model = build_waymo_16_to_32_model(args.tulip_root).to(device)
+    model = build_waymo_16_to_32_model(args.tulip_root)
+    initialization = load_model_initialization(model, args.init_checkpoint)
+    model = model.to(device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.lr, weight_decay=args.weight_decay
     )
-    epoch_metrics: list[dict[str, float]] = []
+    epoch_metrics: list[dict[str, Any]] = []
+    if args.profile == "low_0_1":
+        contract_bands = None
+        band_aggregation = "mean_over_selected_pixels"
+    elif args.profile == "band_balanced":
+        contract_bands = [
+            {
+                "label": label,
+                "lower": lower,
+                "upper": None if not np.isfinite(upper) else upper,
+                "coefficient": coefficient,
+            }
+            for label, lower, upper, coefficient in BALANCED_INTENSITY_BANDS
+        ]
+        band_aggregation = "coefficient_weighted_mean_of_active_band_means"
+    else:
+        band_spec = intensity_band_spec(args.profile)
+        contract_bands = [
+            {
+                "lower_inclusive": lower,
+                "upper_exclusive": None if not np.isfinite(upper) else upper,
+                "weight": weight,
+            }
+            for lower, upper, weight in band_spec
+        ]
+        band_aggregation = "weighted_mean_over_pixels"
     contract = {
         "script_version": SCRIPT_VERSION,
         "profile": args.profile,
@@ -312,14 +496,17 @@ def main() -> None:
         "intensity_error_domain": "log1p",
         "intensity_loss": args.intensity_loss,
         "huber_delta": args.huber_delta if args.intensity_loss == "huber" else None,
-        "intensity_bands": [
+        "intensity_loss_target_scope": (
             {
-                "lower_inclusive": lower,
-                "upper_exclusive": None if not np.isfinite(upper) else upper,
-                "weight": weight,
+                "raw_min_inclusive": 0.0,
+                "raw_max_inclusive": LOW_INTENSITY_MAX_RAW,
+                "raw_above_max_policy": "excluded_from_intensity_loss_only",
             }
-            for lower, upper, weight in intensity_band_spec(args.profile)
-        ],
+            if args.profile == "low_0_1"
+            else "all_valid_generated_pixels"
+        ),
+        "intensity_bands": contract_bands,
+        "intensity_band_aggregation": band_aggregation,
         "range_weight": args.range_weight,
         "intensity_weight": args.intensity_weight,
         "optimizer": "AdamW",
@@ -332,6 +519,7 @@ def main() -> None:
         "seed": args.seed,
         "shuffle": False,
         "num_workers": 0,
+        "initialization": initialization,
     }
     print(
         json.dumps(
@@ -341,6 +529,7 @@ def main() -> None:
                 "epochs": args.epochs,
                 "batch_size": args.batch_size,
                 "checkpoint": str(args.output),
+                "initialization": initialization,
                 "contract": contract,
             },
             ensure_ascii=False,
@@ -356,7 +545,18 @@ def main() -> None:
             "intensity_unweighted_log1p": 0.0,
             "intensity_weighted_log1p": 0.0,
             "weighted_pixel_fraction": 0.0,
+            "intensity_optimized_pixel_fraction": 0.0,
         }
+        band_loss_sums = {
+            label: 0.0 for label, _, _, _ in BALANCED_INTENSITY_BANDS
+        }
+        band_active_batches = {
+            label: 0.0 for label, _, _, _ in BALANCED_INTENSITY_BANDS
+        }
+        band_pixel_counts = {
+            label: 0.0 for label, _, _, _ in BALANCED_INTENSITY_BANDS
+        }
+        valid_generated_pixel_count = 0.0
         steps = 0
         for batch in loader:
             input_signal = batch["input"].to(device)
@@ -386,10 +586,40 @@ def main() -> None:
             for name in totals:
                 if name != "loss":
                     totals[name] += float(losses[name].detach())
+            if args.profile == "band_balanced":
+                valid_generated_pixel_count += float(
+                    losses["valid_generated_pixels"].detach()
+                )
+                for label, _, _, _ in BALANCED_INTENSITY_BANDS:
+                    active = float(losses[f"band_{label}_active"].detach())
+                    band_active_batches[label] += active
+                    band_pixel_counts[label] += float(
+                        losses[f"band_{label}_pixels"].detach()
+                    )
+                    if active:
+                        band_loss_sums[label] += float(
+                            losses[f"band_{label}_loss_log1p"].detach()
+                        )
             steps += 1
         if steps == 0:
             raise RuntimeError("training DataLoader produced no batches")
         metrics = {name: value / steps for name, value in totals.items()}
+        if args.profile == "band_balanced":
+            for label, _, _, _ in BALANCED_INTENSITY_BANDS:
+                active_batches = band_active_batches[label]
+                metrics[f"band_{label}_loss_log1p"] = (
+                    band_loss_sums[label] / active_batches
+                    if active_batches > 0
+                    else None
+                )
+                metrics[f"band_{label}_pixel_count"] = int(
+                    band_pixel_counts[label]
+                )
+                metrics[f"band_{label}_pixel_fraction"] = (
+                    band_pixel_counts[label] / valid_generated_pixel_count
+                    if valid_generated_pixel_count > 0
+                    else None
+                )
         epoch_metrics.append(metrics)
         print(json.dumps({"epoch": epoch, **metrics}), flush=True)
 

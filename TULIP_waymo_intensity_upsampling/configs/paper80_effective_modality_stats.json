@@ -1,0 +1,6 @@
+{
+  "cam_mean": 0.5,
+  "cam_std": 0.5,
+  "anc_mean": 0.5,
+  "anc_std": 0.5
+}

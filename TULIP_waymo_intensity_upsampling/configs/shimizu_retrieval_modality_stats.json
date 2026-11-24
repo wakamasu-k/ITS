@@ -1,0 +1,19 @@
+{
+  "sample_every": 1,
+  "max_rows": -1,
+  "anchor_mode": "anchor_png",
+  "ri_count": 8,
+  "ri_glob": "ri_*.png",
+  "resize_h": 0,
+  "resize_w": 0,
+  "cam_count": 28772,
+  "anc_count": 28771,
+  "cam_pixels": 70710067200,
+  "anc_pixels": 70707609600,
+  "cam_missing": 0,
+  "anc_missing": 1,
+  "cam_mean": 0.44016162526837893,
+  "cam_std": 0.22263300476283557,
+  "anc_mean": 0.2048222792117449,
+  "anc_std": 0.29141667398991067
+}

@@ -21,7 +21,7 @@ from tulip_adapter.waymo_16_to_32_dataset import Waymo16To32Dataset
 from tulip_adapter.waymo_16_to_32_tulip import build_waymo_16_to_32_model
 
 
-SCRIPT_VERSION = "1.0.0"
+SCRIPT_VERSION = "1.1.0"
 NATIVE_WIDTH = 2650
 PADDED_WIDTH = 2688
 INTENSITY_BINS = (
@@ -183,6 +183,31 @@ def binary_counts(
     }
 
 
+def raw_intensity_interval_mask(
+    target_raw: torch.Tensor,
+    valid_mask: torch.Tensor,
+    *,
+    lower_inclusive: float,
+    upper_inclusive: float,
+) -> torch.Tensor:
+    """Select a closed raw-intensity interval inside an existing valid mask.
+
+    Input shapes: target and mask ``[B,H,W]``. Output shape: bool
+    ``[B,H,W]``. Boundary values are included.
+    """
+    if target_raw.ndim != 3 or target_raw.shape != valid_mask.shape:
+        raise ValueError("target_raw and valid_mask must have matching [B,H,W]")
+    if lower_inclusive > upper_inclusive:
+        raise ValueError("intensity interval lower bound exceeds upper bound")
+    if not torch.isfinite(target_raw).all():
+        raise ValueError("target_raw must be finite")
+    return (
+        valid_mask.to(dtype=torch.bool)
+        & (target_raw >= lower_inclusive)
+        & (target_raw <= upper_inclusive)
+    )
+
+
 def _empty_metric_accumulator() -> dict[str, float | int]:
     """Create one pixel-weighted metric accumulator."""
     return {
@@ -285,6 +310,11 @@ def main() -> None:
     args.output_root.mkdir(parents=True, exist_ok=True)
 
     metric_accum = {method: _empty_metric_accumulator() for method in METHODS}
+    intensity_0_1_accum = {
+        method: {"raw_abs_sum": 0.0, "log1p_abs_sum": 0.0}
+        for method in METHODS
+    }
+    intensity_0_1_count = 0
     bin_accum = _empty_bin_accumulator()
     threshold_accum = _empty_threshold_accumulator()
     per_frame: list[dict[str, Any]] = []
@@ -350,6 +380,14 @@ def main() -> None:
             if valid_count == 0:
                 raise ValueError(f"sample {sample_index} has no generated valid pixels")
             total_valid += valid_count
+            intensity_0_1_mask = raw_intensity_interval_mask(
+                target_raw[:, 1],
+                mask,
+                lower_inclusive=0.0,
+                upper_inclusive=1.0,
+            )
+            frame_intensity_0_1_count = int(intensity_0_1_mask.sum())
+            intensity_0_1_count += frame_intensity_0_1_count
             tulip_negative_range += int((mask & (tulip_unclamped[:, 0] < 0)).sum())
             tulip_negative_intensity += int((mask & (tulip_unclamped[:, 1] < 0)).sum())
 
@@ -377,6 +415,26 @@ def main() -> None:
                 frame_row[f"{method}_range_mae_m"] = float(range_abs.mean())
                 frame_row[f"{method}_intensity_raw_mae"] = float(intensity_raw_abs.mean())
                 frame_row[f"{method}_intensity_log1p_mae"] = float(intensity_log_abs.mean())
+                if frame_intensity_0_1_count:
+                    intensity_0_1_raw_abs = (
+                        raw_value[:, 1] - target_raw[:, 1]
+                    ).abs()[intensity_0_1_mask]
+                    intensity_0_1_log_abs = (
+                        log_value - target_log
+                    ).abs()[intensity_0_1_mask]
+                    intensity_0_1_accum[method]["raw_abs_sum"] += float(
+                        intensity_0_1_raw_abs.sum()
+                    )
+                    intensity_0_1_accum[method]["log1p_abs_sum"] += float(
+                        intensity_0_1_log_abs.sum()
+                    )
+                    frame_row[f"{method}_intensity_0_1_raw_mae"] = float(
+                        intensity_0_1_raw_abs.mean()
+                    )
+                    frame_row[f"{method}_intensity_0_1_log1p_mae"] = float(
+                        intensity_0_1_log_abs.mean()
+                    )
+            frame_row["intensity_0_1_valid_pixels"] = frame_intensity_0_1_count
 
             target_values = target_raw[:, 1][mask]
             for label, lower, upper in INTENSITY_BINS:
@@ -465,6 +523,21 @@ def main() -> None:
                 "f1": f1,
             }
 
+    if intensity_0_1_count == 0:
+        raise ValueError("no generated valid pixels have raw intensity in [0, 1]")
+    primary_intensity_0_1 = {
+        "target_condition": "0 <= raw_intensity <= 1",
+        "count": intensity_0_1_count,
+        "fraction_of_generated_valid": intensity_0_1_count / total_valid,
+        "methods": {
+            method: {
+                "raw_mae": float(values["raw_abs_sum"]) / intensity_0_1_count,
+                "log1p_mae": float(values["log1p_abs_sum"]) / intensity_0_1_count,
+            }
+            for method, values in intensity_0_1_accum.items()
+        },
+    }
+
     saved_args = checkpoint.get("args", {})
     checkpoint_profile = checkpoint.get("training_contract", {}).get(
         "profile", saved_args.get("profile", "historical") if isinstance(saved_args, dict) else "historical"
@@ -485,6 +558,7 @@ def main() -> None:
         "interpolation_baseline_domain": "raw_range_and_raw_intensity",
         "aggregate_pixel_weighted": aggregate,
         "aggregate_frame_mean": frame_mean,
+        "primary_intensity_0_1": primary_intensity_0_1,
         "tulip_negative_prediction": {
             "range_count": tulip_negative_range,
             "range_fraction": tulip_negative_range / total_valid,
